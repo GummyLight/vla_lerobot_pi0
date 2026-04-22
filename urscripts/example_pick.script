@@ -1,0 +1,38 @@
+def pick_and_place():
+  # Move to home position
+  movej([0, -1.5708, 0, -1.5708, 0, 0], a=0.5, v=0.5)
+  sleep(0.5)
+
+  # Move above pick target
+  movel(p[0.4, -0.2, 0.3, 3.14, 0, 0], a=0.3, v=0.1)
+  sleep(0.3)
+
+  # Descend to pick position
+  movel(p[0.4, -0.2, 0.15, 3.14, 0, 0], a=0.2, v=0.05)
+  sleep(0.5)
+
+  # Close gripper (via URScript gripper command — adapt to your URCap)
+  # set_digital_out(8, True)   # example for binary I/O gripper trigger
+  sleep(0.5)
+
+  # Lift
+  movel(p[0.4, -0.2, 0.3, 3.14, 0, 0], a=0.3, v=0.1)
+  sleep(0.3)
+
+  # Move to place target
+  movel(p[0.4, 0.2, 0.3, 3.14, 0, 0], a=0.3, v=0.1)
+  sleep(0.3)
+
+  # Descend to place
+  movel(p[0.4, 0.2, 0.15, 3.14, 0, 0], a=0.2, v=0.05)
+  sleep(0.5)
+
+  # Open gripper
+  # set_digital_out(8, False)
+  sleep(0.5)
+
+  # Retreat
+  movel(p[0.4, 0.2, 0.3, 3.14, 0, 0], a=0.3, v=0.1)
+end
+
+pick_and_place()

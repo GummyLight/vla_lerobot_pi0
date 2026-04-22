@@ -1,0 +1,33 @@
+# ============================================================
+#  Mode 1 — URScript + Robotiq 2F-58 + 2× Intel D435i
+#  Edit the values below to match your setup.
+# ============================================================
+
+robot:
+  host: "192.168.1.100"       # UR7e controller IP address
+  frequency: 500.0             # RTDE receive frequency (Hz)
+
+gripper:
+  port: 63352                  # Robotiq URCap socket port (default: 63352)
+  type: "robotiq_2f58"
+
+cameras:
+  - name: cam_external_1
+    serial: ""                 # Leave empty to use first available D435i.
+                               # Run `rs-enumerate-devices` to find serial numbers.
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false        # Set true to also capture depth frames
+
+  - name: cam_external_2
+    serial: ""                 # Serial of second D435i
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false
+
+collection:
+  fps: 30                      # Recording frame rate (must be <= camera fps)
+  output_dir: "datasets"       # Root folder for saved datasets
+  dataset_name: "ur7e_urscript_demo"

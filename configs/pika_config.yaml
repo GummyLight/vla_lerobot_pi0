@@ -1,0 +1,47 @@
+# ============================================================
+#  Mode 2 — Pika Sense + Pika Gripper + D435i + Wrist Camera
+#  Edit the values below to match your setup.
+# ============================================================
+
+robot:
+  host: "192.168.1.100"       # UR7e controller IP address
+  frequency: 500.0
+
+pika_gripper:
+  port: "/dev/ttyUSB0"        # Serial port of Pika gripper  (Windows: "COM3")
+  baudrate: 115200
+
+pika_sense:
+  port: "/dev/ttyUSB1"        # Serial port of Pika Sense   (Windows: "COM4")
+  baudrate: 115200
+
+cameras:
+  # External D435i (side/front view)
+  - name: cam_external
+    serial: ""                 # D435i serial number; empty = first found
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false
+
+  # Pika gripper built-in wrist camera
+  # source: "pika_gripper" tells collect_pika.py to read from the gripper object
+  - name: cam_wrist
+    source: "pika_gripper"
+    device_index: 0            # UVC device index of the wrist camera (try 0, 1, 2…)
+    width: 640
+    height: 480
+    fps: 30
+
+collection:
+  fps: 30
+  output_dir: "datasets"
+  dataset_name: "ur7e_pika_demo"
+
+teleoperation:
+  speed_scale: 0.3             # Scale applied to Sense translation deltas (m/s per unit)
+  rotation_scale: 0.5          # Scale applied to Sense rotation deltas (rad/s per unit)
+  workspace_limits:            # (optional) TCP position clipping in metres
+    x: [-0.8, 0.8]
+    y: [-0.8, 0.8]
+    z: [0.05, 1.2]
