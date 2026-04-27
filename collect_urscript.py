@@ -53,7 +53,7 @@ def parse_args():
 
 
 def load_config(path: str) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -78,8 +78,8 @@ class URScriptCollector:
         self.cameras = MultiCamera(cam_cfgs)
         self._cam_keys = [c["name"] for c in cam_cfgs]
 
-    def connect(self):
-        self.robot.connect()
+    def connect(self, use_control: bool = True):
+        self.robot.connect(use_control=use_control)
         self.gripper.connect()
         self.cameras.connect()
         print("\n[Collector] All devices ready.\n")
@@ -93,7 +93,8 @@ class URScriptCollector:
         self.gripper.disconnect()
         self.cameras.disconnect()
 
-    def run_episode(self, task: str, urscript: str | None) -> bool:
+    def run_episode(self, task: str, urscript: str | None,
+                    is_full_program: bool = False) -> bool:
         """
         Record one episode. Returns True to continue, False to quit.
         """
@@ -123,8 +124,12 @@ class URScriptCollector:
         self.writer.start_episode(task)
 
         if script_to_send:
-            print("[Robot] Sending URScript...")
-            self.robot.send_urscript(script_to_send)
+            if is_full_program:
+                print("[Robot] Playing URScript program (primary interface)...")
+                self.robot.play_program(script_to_send)
+            else:
+                print("[Robot] Sending URScript snippet...")
+                self.robot.send_urscript(script_to_send)
 
         print(f"[Collector] Recording at {fps} fps. Press Ctrl+C to end episode.\n")
         start = time.time()
@@ -177,10 +182,13 @@ class URScriptCollector:
 
     def run(self, task: str, urscript_file: str | None):
         urscript = None
+        is_full_program = False
         if urscript_file:
-            with open(urscript_file) as f:
+            with open(urscript_file, encoding="utf-8") as f:
                 urscript = f.read()
-            print(f"[Collector] Loaded URScript from {urscript_file}")
+            is_full_program = True
+            print(f"[Collector] Loaded URScript from {urscript_file} "
+                  f"({len(urscript)} chars, will play via primary interface)")
 
         try:
             while True:
@@ -189,7 +197,7 @@ class URScriptCollector:
                 if cmd == "q":
                     break
                 if cmd in ("s", ""):
-                    keep_going = self.run_episode(task, urscript)
+                    keep_going = self.run_episode(task, urscript, is_full_program)
                     if not keep_going:
                         break
         finally:
@@ -229,7 +237,11 @@ def main():
     )
 
     collector = URScriptCollector(cfg, writer)
-    collector.connect()
+    # When playing a full PolyScope program via --urscript_file we MUST NOT open
+    # RTDEControl: its keep-alive thread re-uploads its own script on top of
+    # ours, killing motion before it starts.
+    use_control = args.urscript_file is None
+    collector.connect(use_control=use_control)
     collector.run(task=args.task, urscript_file=args.urscript_file)
 
 

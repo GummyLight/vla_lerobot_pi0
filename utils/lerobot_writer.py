@@ -199,8 +199,8 @@ class LeRobotWriter:
             "tasks": [self._episode_task],
             "length": len(self._rows),
         }
-        with open(self.meta_dir / "episodes.jsonl", "a") as f:
-            f.write(json.dumps(meta) + "\n")
+        with open(self.meta_dir / "episodes.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(meta, ensure_ascii=False) + "\n")
 
         n = len(self._rows)
         print(f"  Episode {self.episode_index} saved — {n} frames ({n / self.fps:.1f}s)")
@@ -257,11 +257,11 @@ class LeRobotWriter:
             "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
             "video_path": "videos/{video_key}/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.mp4",
         }
-        with open(self.meta_dir / "info.json", "w") as f:
-            json.dump(info, f, indent=2)
+        with open(self.meta_dir / "info.json", "w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2, ensure_ascii=False)
 
-        with open(self.meta_dir / "tasks.jsonl", "w") as f:
-            f.write(json.dumps({"task_index": 0, "task": self._episode_task or "manipulation"}) + "\n")
+        with open(self.meta_dir / "tasks.jsonl", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"task_index": 0, "task": self._episode_task or "manipulation"}, ensure_ascii=False) + "\n")
 
         print(f"\nDataset written to: {self.root}")
         print(f"  Episodes : {self.episode_index}")

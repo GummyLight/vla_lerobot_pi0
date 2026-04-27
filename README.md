@@ -31,24 +31,123 @@ Two independent collection modes are provided:
 
 ## Installation
 
+We strongly recommend a clean Python 3.10 environment (conda / miniforge / venv —
+any of them will do). The codebase has been tested on Python 3.10 with the
+package versions pinned in `requirements.txt`.
+
+### Linux / macOS
+
 ```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Pika SDK** — Install the Python package provided by your Pika vendor and
-> update the import path at the top of `utils/pika_interface.py` accordingly.
-> If the SDK is not yet available, the module falls back to raw serial I/O.
+### Windows (tested on Windows 11 + miniforge)
 
-Optionally install **ffmpeg** for H.264 video re-encoding (highly recommended
-for compatibility with the `lerobot` data loader):
+Open **Anaconda / Miniforge Prompt** (a regular `cmd` or PowerShell will also
+work as long as `conda` is on PATH — Git Bash is fine too):
+
+```bash
+conda create -n ur7e python=3.10 -y
+conda activate ur7e
+pip install -r requirements.txt
+```
+
+> **Heads-up on Chinese / non-UTF-8 Windows locales (cp936/GBK)**
+> Python's default `open()` uses the system code page on Windows. The repo's
+> YAML configs and URScript files are stored in UTF-8, so all file reads in
+> this project pass `encoding="utf-8"` explicitly. If you write your own
+> helper scripts that read these files, do the same — otherwise you will hit
+> `UnicodeDecodeError: 'gbk' codec can't decode byte ...` on the em-dashes in
+> the configs.
+
+### Pika SDK (Mode 2 only)
+
+Install the Python package provided by your Pika vendor and update the import
+path at the top of `utils/pika_interface.py` accordingly. If the SDK is not yet
+available, the module falls back to raw serial I/O.
+
+### ffmpeg (optional but strongly recommended)
+
+Without ffmpeg, videos are stored with the OpenCV `mp4v` codec, which several
+downstream loaders (including `lerobot`) reject. Install H.264-capable ffmpeg
+and put it on PATH:
 
 ```bash
 # Ubuntu / Debian
 sudo apt install ffmpeg
 
-# Windows — download from https://ffmpeg.org/download.html
-# and add to PATH
+# macOS (Homebrew)
+brew install ffmpeg
 ```
+
+**Windows** — easiest options:
+
+```powershell
+# Option A — winget (Windows 10/11)
+winget install --id=Gyan.FFmpeg -e
+
+# Option B — Chocolatey
+choco install ffmpeg
+
+# Option C — manual: download a "release full" build from
+#   https://www.gyan.dev/ffmpeg/builds/
+# unzip to e.g. C:\ffmpeg, then add C:\ffmpeg\bin to your PATH (System
+# Properties → Environment Variables). Restart your terminal afterwards.
+```
+
+Verify with `ffmpeg -version`.
+
+---
+
+## Verifying your environment
+
+Before plugging in any hardware, sanity-check the install:
+
+```bash
+python -c "
+import numpy, pandas, pyarrow, yaml, cv2, serial
+import pyrealsense2 as rs
+from rtde_control import RTDEControlInterface
+from rtde_receive import RTDEReceiveInterface
+print('All imports OK')
+print('opencv', cv2.__version__, 'numpy', numpy.__version__)
+"
+```
+
+Then with hardware plugged in, confirm device discovery:
+
+```bash
+# RealSense
+python -c "import pyrealsense2 as rs; print([d.get_info(rs.camera_info.serial_number) for d in rs.context().devices])"
+
+# Serial ports
+python -m serial.tools.list_ports
+```
+
+---
+
+## Networking (UR7e controller)
+
+The UR7e talks to the host over Ethernet via `ur_rtde` (ports 30001–30004 +
+29999) and to the Robotiq URCap on port 63352. A few things to check:
+
+1. **IP address** — set `robot.host` in the config to the controller's IP.
+   The default `168.254.175.10` (URScript mode) and `192.168.1.100` (Pika
+   mode) are placeholders; on the teach pendant go to
+   *Settings → Network* to read the real one.
+2. **Same subnet** — the host PC's adapter must be on the same `/24` as the
+   controller. On Windows, set a static IPv4 on the relevant adapter
+   (Settings → Network & Internet → adapter → Edit IP settings).
+3. **Ping test** — `ping <robot_ip>` should succeed before you run the
+   collector.
+4. **Windows Firewall** — when the collector first runs, Windows may show a
+   prompt to allow Python through the firewall. Allow it on the *Private*
+   profile. If you accidentally denied it, remove the rule under
+   *Windows Defender Firewall → Advanced settings → Inbound Rules*.
+5. **Remote control mode** — on the teach pendant, switch the controller
+   into **Remote Control** so that `ur_rtde` can send motion commands.
 
 ---
 
@@ -63,29 +162,57 @@ Before running, edit the config file that matches your mode:
 
 ### Finding D435i serial numbers
 
+The cross-platform method (works on Linux / macOS / Windows once
+`pyrealsense2` is installed):
+
+```bash
+python -c "import pyrealsense2 as rs; ctx = rs.context(); [print(d.get_info(rs.camera_info.name), d.get_info(rs.camera_info.serial_number)) for d in ctx.devices]"
+```
+
+Native alternatives:
+
 ```bash
 # Linux
 rs-enumerate-devices | grep "Serial Number"
 
-# Python
-python -c "import pyrealsense2 as rs; ctx = rs.context(); [print(d.get_info(rs.camera_info.serial_number)) for d in ctx.devices]"
+# Windows — install the Intel RealSense SDK from
+#   https://www.intelrealsense.com/sdk-2/
+# then run "Intel RealSense Viewer" — the serial is shown next to each device.
+# (The SDK installer also updates the camera firmware if needed.)
 ```
 
-### Finding serial ports (Linux)
+If the Python one-liner exits with `RuntimeError: Camera not connected!`,
+the camera is not enumerated by the OS. On Windows, check Device Manager
+under **Cameras** for `Intel(R) RealSense(TM) Depth Camera 435i` — if it
+appears with a yellow warning, re-plug into a different USB-3 port (the
+controller is sensitive to USB-2 ports and unpowered hubs).
+
+### Finding serial ports
 
 ```bash
-ls /dev/ttyUSB*
-# or
-dmesg | grep tty
+# Cross-platform (built into pyserial)
+python -m serial.tools.list_ports
 ```
+
+```bash
+# Linux
+ls /dev/ttyUSB*
+dmesg | grep tty
+
+# Windows — Device Manager → "Ports (COM & LPT)"
+# Each Pika device appears as e.g. "USB Serial Port (COM3)".
+# Use exactly that COMx string (e.g. "COM3") in pika_config.yaml.
+```
+
+> **Windows COM port naming** — `pika_config.yaml` ships with Linux paths
+> (`/dev/ttyUSB0`). Replace `pika_gripper.port` and `pika_sense.port` with the
+> actual `COMx` strings from the previous step. Quote them in YAML
+> (`port: "COM3"`).
 
 ### Finding UVC camera device index (wrist camera)
 
 ```bash
-# Linux
-ls /dev/video*
-
-# Python — list all available camera indices
+# Cross-platform — list all available OpenCV camera indices
 python -c "
 import cv2
 for i in range(8):
@@ -94,6 +221,101 @@ for i in range(8):
     c.release()
 "
 ```
+
+```bash
+# Linux only
+ls /dev/video*
+```
+
+> **Windows** — laptops with an integrated webcam often expose it at
+> index 0, so the Pika wrist camera will be at index 1 or 2. Try
+> `device_index: 1` first if you have a built-in camera. If OpenCV is slow
+> to open the device on Windows, that's expected (DirectShow probing) — give
+> it 2-3 seconds.
+
+### Previewing camera streams (check framing before recording)
+
+Use these to verify camera placement / focus / occlusion before you start
+collecting episodes. Press **`q`** in the preview window to close it.
+
+**Easiest on Windows — Intel RealSense Viewer (GUI):**
+Install the Intel RealSense SDK from
+<https://www.intelrealsense.com/sdk-2/>, launch *Intel RealSense Viewer*,
+toggle each connected camera on and tweak the physical mount until the
+framing looks right. The viewer also shows the serial number for each
+device, useful for filling in `configs/*.yaml`.
+
+**Single D435i — Python one-liner (works everywhere):**
+
+```bash
+# First D435i found (any platform)
+python -c "
+import pyrealsense2 as rs, numpy as np, cv2
+p = rs.pipeline(); c = rs.config()
+c.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+p.start(c)
+try:
+    while True:
+        f = p.wait_for_frames().get_color_frame()
+        cv2.imshow('D435i  (q=quit)', np.asanyarray(f.get_data()))
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
+finally:
+    p.stop(); cv2.destroyAllWindows()
+"
+```
+
+To preview a **specific** camera by serial (e.g. when you have two D435i
+and want to know which is `cam_external_1` vs `cam_external_2`), add
+`c.enable_device("YOUR_SERIAL")` right before `c.enable_stream(...)`.
+
+**Easier and more reliable on Windows — use the bundled `preview_cameras.py`:**
+
+PowerShell's handling of multi-line `python -c "..."` strings is fragile
+(quoting and indentation often get mangled silently). The repo ships a
+small helper that does the same thing and adds USB-friendly defaults
+(staggered startup, warm-up loop, auto-exposure convergence):
+
+```bash
+python preview_cameras.py                       # preview the first camera found
+python preview_cameras.py --serial 405622074939 # preview a specific camera
+python preview_cameras.py --all                 # both cameras side by side
+python preview_cameras.py --all --fps 15        # halve the USB bandwidth
+```
+
+> **`RuntimeError: Frame didn't arrive within 5000`** — the cameras enumerated
+> but at least one stream never produced frames. In order of likelihood:
+> 1. **USB bandwidth** — both D435i are on the same USB-3 controller (most
+>    common on tower PCs where front-panel ports share one controller). Move
+>    one camera to a port on a different controller (typically rear ports
+>    behind the CPU vs. the chipset), or drop to `fps=15` in the snippet.
+> 2. **USB-2 fallback** — Windows sometimes silently negotiates USB-2 on a
+>    USB-3 cable. Open the **Intel RealSense Viewer**; if a yellow USB-2.1
+>    badge appears next to the device, swap the cable / port.
+> 3. **First run after plugging in** — re-running the snippet a second time
+>    often succeeds; the warm-up loop above already handles this.
+> 4. **Driver / firmware mismatch** — open the RealSense Viewer once to let
+>    it offer a firmware update, then retry.
+
+**UVC / Pika wrist camera — OpenCV preview:**
+
+```bash
+# Replace 0 with the device_index you want to inspect (try 0, 1, 2 ...)
+python -c "
+import cv2
+cap = cv2.VideoCapture(0)
+while True:
+    ok, frame = cap.read()
+    if not ok: break
+    cv2.imshow('UVC  (q=quit)', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
+cap.release(); cv2.destroyAllWindows()
+"
+```
+
+> **If preview works but `collect_*.py` then fails to open the camera**,
+> the previous preview process is still holding the device — make sure
+> the OpenCV/RealSense window has fully closed (or kill the python process)
+> before launching the collector.
 
 ---
 
@@ -290,3 +512,18 @@ marked with `# ADAPT`. Specifically:
   videos are stored as `mp4v` which some decoders reject.
 - **Adjust FPS** — pass `--fps 15` for slower recordings or higher-latency
   setups; the lerobot data loader handles any fps set in `meta/info.json`.
+
+---
+
+## Troubleshooting (Windows)
+
+| Symptom | Likely cause / fix |
+|---------|--------------------|
+| `UnicodeDecodeError: 'gbk' codec can't decode byte ...` when loading a config | A custom helper script is opening the YAML/URScript file without `encoding="utf-8"`. The collectors in this repo already pass it explicitly. |
+| `RuntimeError: Camera not connected!` from pyrealsense2 | The D435i is on a USB-2 port or unpowered hub. Re-plug into a motherboard USB-3 (blue) port. Update firmware via the Intel RealSense Viewer if it still doesn't appear. |
+| `RuntimeError: Frame didn't arrive within 5000` (or 10000) **right after** the camera enumerates fine | **USB-2 link** — the camera is on a USB-3 port but the **cable is USB-2 only** (very common with the short cables shipped in random USB-C cable bags). Run `python preview_cameras.py` and check the printed `usb_type` field — if it says `2.1`, swap the cable for a SuperSpeed (SS-marked, blue tip, ideally ≤1 m) USB-A↔USB-C cable. The D435i firmware refuses to start the 640×480@30 color stream over USB 2 and the device will then drop off the bus until you replug. |
+| `serial.serialutil.SerialException: could not open port 'COM3'` | Either the port name is wrong (check Device Manager) or another program (e.g. Pika's vendor GUI, Arduino IDE serial monitor) holds the port. Close it and retry. |
+| `RTDEControlInterface: failed to connect` | (a) `ping <robot_ip>` first — wrong subnet is the most common cause. (b) On the pendant, switch the controller to **Remote Control**. (c) Allow Python through Windows Defender Firewall on the *Private* profile. |
+| Wrist camera opens the wrong device (e.g. laptop webcam) | Increment `device_index` in `pika_config.yaml` (try 1, 2, …). On Windows, the integrated webcam usually grabs index 0. |
+| `mp4v` warning when saving videos | Install `ffmpeg` and ensure it is on PATH. Verify with `ffmpeg -version` *before* starting the collector. |
+| Collector freezes after Ctrl+C in PowerShell | Use Ctrl+C only **once**, then wait — episode finalisation (parquet + mp4 encoding) can take a few seconds per minute of footage. |
