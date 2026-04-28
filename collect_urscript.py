@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import re
 import signal
 import sys
 import time
@@ -22,6 +23,44 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+
+def _perturb_waypoints(script: str, std: float, rng: np.random.Generator,
+                       lhs_pattern: str) -> tuple[str, int]:
+    """Add N(0, std) noise to every joint angle inside lines like
+        global Waypoint_3_q=[a, b, c, d, e, f]
+    matching `lhs_pattern` on the LHS variable name. Returns the modified
+    script and the number of waypoints perturbed."""
+    if std <= 0:
+        return script, 0
+    if std > 0.1:
+        deg = std * 180.0 / np.pi
+        print(f"[Robot] !! WARNING: --joint_jitter={std} rad ≈ {deg:.1f} deg "
+              f"is very large.")
+        print(f"           Recommended range: 0.005–0.05 rad (0.3–3 deg).")
+        print(f"           At this level, most waypoints will likely become "
+              f"unreachable, IK will fail, and the program will halt before "
+              f"any motion happens. Episode will record stationary state.")
+    waypoint_re = re.compile(
+        rf"(global\s+{lhs_pattern}\s*=\s*\[)([^\]]+)(\])"
+    )
+    count = 0
+
+    def repl(m):
+        nonlocal count
+        prefix, body, suffix = m.group(1), m.group(2), m.group(3)
+        try:
+            vals = [float(x.strip()) for x in body.split(",")]
+        except ValueError:
+            return m.group(0)
+        if len(vals) != 6:
+            return m.group(0)
+        vals = [v + float(rng.normal(0.0, std)) for v in vals]
+        count += 1
+        return prefix + ", ".join(f"{v:.12f}" for v in vals) + suffix
+
+    out = waypoint_re.sub(repl, script)
+    return out, count
 
 from utils.camera_interface import MultiCamera
 from utils.lerobot_writer import LeRobotWriter
@@ -49,6 +88,17 @@ def parse_args():
                    help="Path to a .script file to send at episode start. "
                         "If omitted you can type/paste URScript interactively.")
     p.add_argument("--fps", type=int, default=None, help="Override config fps")
+    p.add_argument("--joint_jitter", type=float, default=0.0,
+                   help="Per-episode Gaussian noise (rad, std-dev) added to "
+                        "every Waypoint_N_q in the loaded URScript. "
+                        "0 disables. Typical: 0.005-0.02 (about 0.3-1 deg).")
+    p.add_argument("--jitter_seed", type=int, default=None,
+                   help="Seed for jitter RNG (omit for non-deterministic).")
+    p.add_argument("--jitter_pattern", default=r"\w+_q",
+                   help="Regex matching the LHS of waypoint definitions to "
+                        r"perturb. Default \w+_q matches Waypoint_N_q, "
+                        "EndPoint_N_q, ViaPoint_N_q. Set e.g. 'Waypoint_3_q' "
+                        "to jitter only one specific waypoint.")
     return p.parse_args()
 
 
@@ -62,9 +112,15 @@ def load_config(path: str) -> dict:
 # ------------------------------------------------------------------
 
 class URScriptCollector:
-    def __init__(self, cfg: dict, writer: LeRobotWriter):
+    def __init__(self, cfg: dict, writer: LeRobotWriter,
+                 jitter_std: float = 0.0,
+                 jitter_seed: int | None = None,
+                 jitter_pattern: str = r"\w+_q"):
         self.cfg = cfg
         self.writer = writer
+        self.jitter_std = jitter_std
+        self.jitter_pattern = jitter_pattern
+        self.rng = np.random.default_rng(jitter_seed)
 
         self.robot = UR7eInterface(
             host=cfg["robot"]["host"],
@@ -125,7 +181,15 @@ class URScriptCollector:
 
         if script_to_send:
             if is_full_program:
-                print("[Robot] Playing URScript program (primary interface)...")
+                if self.jitter_std > 0:
+                    script_to_send, n_perturbed = _perturb_waypoints(
+                        script_to_send, self.jitter_std, self.rng,
+                        self.jitter_pattern,
+                    )
+                    print(f"[Robot] Jittered {n_perturbed} waypoint(s) "
+                          f"matching /{self.jitter_pattern}/ "
+                          f"with sigma={self.jitter_std} rad")
+                print("[Robot] Playing URScript program (realtime interface)...")
                 self.robot.play_program(script_to_send)
             else:
                 print("[Robot] Sending URScript snippet...")
@@ -236,7 +300,12 @@ def main():
         action_is_commanded=False,  # actions derived by state-shift in end_episode
     )
 
-    collector = URScriptCollector(cfg, writer)
+    collector = URScriptCollector(
+        cfg, writer,
+        jitter_std=args.joint_jitter,
+        jitter_seed=args.jitter_seed,
+        jitter_pattern=args.jitter_pattern,
+    )
     # When playing a full PolyScope program via --urscript_file we MUST NOT open
     # RTDEControl: its keep-alive thread re-uploads its own script on top of
     # ours, killing motion before it starts.

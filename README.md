@@ -1,14 +1,16 @@
 # UR7e LeRobot Data Collection
 
+> 🌏 **中文版**: [README_CN.md](README_CN.md)
+
 Data collection toolkit for the **UR7e robot arm** that saves demonstrations in
-**LeRobot v2.0 format** ready for VLA fine-tuning (e.g. with
+**LeRobot v3.0 format** ready for VLA fine-tuning (e.g. with
 [lerobot](https://github.com/huggingface/lerobot)).
 
 Two independent collection modes are provided:
 
 | Mode | Script | End-effector | Cameras |
 |------|--------|-------------|---------|
-| **1 — URScript** | `collect_urscript.py` | Robotiq 2F-58 | 2× Intel D435i |
+| **1 — URScript** | `collect_urscript.py` | Robotiq 2F-58 | 1–2× Intel D435i |
 | **2 — Pika Teleoperation** | `collect_pika.py` | Pika Gripper | 1× D435i + Pika wrist cam |
 
 ---
@@ -18,7 +20,8 @@ Two independent collection modes are provided:
 ### Mode 1
 - UR7e robot controller reachable over Ethernet
 - Robotiq 2F-58 with URCap installed on the controller (exposes port `63352`)
-- 2× Intel RealSense D435i connected via USB 3
+- 1–2× Intel RealSense D435i connected via USB 3 (single-camera setups are
+  fully supported — just keep one entry under `cameras:` in the config)
 
 ### Mode 2
 - UR7e robot controller reachable over Ethernet
@@ -340,6 +343,82 @@ python collect_urscript.py \
   --urscript_file urscripts/example_pick.script
 ```
 
+**How `--urscript_file` differs from typing URScript inline.**
+PolyScope-exported `.script` files wrap their entire body in
+`def P1():\n  ...\nend` and never call `P1()` — PolyScope adds the call
+implicitly on Play. The collector handles this for you: when
+`--urscript_file` is set, it
+
+1. Connects **only** `RTDEReceiveInterface` for state — *not*
+   `RTDEControlInterface`. ur_rtde's control interface uploads its own
+   keep-alive script to the controller; if both are running, that thread
+   silently re-uploads on top of your program and your robot never moves.
+2. Sends the file to the **Realtime interface (port 30003)** as a top-level
+   program — `ur_rtde.sendCustomScript` and ports `30001/30002` are blocked
+   on PolyScope X firmware (UR7e and friends). Port 30003 stays open.
+3. Detects the `def NAME():` wrapper and **auto-appends `NAME()`** so the
+   function actually executes.
+
+You will see this on a successful run:
+```
+[Robot] Connected to UR7e @ ...  (control=off)
+[Robot] Auto-appended call to top-level function 'P1()'
+[Robot] Sent 86142 bytes to ...:30003 (realtime interface)
+[Robot] Dashboard: Program running: true
+```
+
+If `Dashboard: Program running: false` instead, the controller rejected the
+script — open the pendant **Log** tab for the actual error (typical causes:
+not in Remote Control mode; URCap functions like `rq_*` not installed;
+syntax incompatible with this PolyScope version).
+
+### Reusing one `.script` for many episodes (joint jitter)
+
+For diversified VLA training data you usually want the **same nominal
+trajectory** repeated many times with small variations. The collector can
+add per-episode Gaussian noise to every `Waypoint_N_q` it finds in the
+loaded script, leaving TCP poses (`_p`) and configuration calls
+(`set_tcp`, `set_tool_communication`, …) untouched.
+
+```bash
+# Each press of [s] reuses the same script with fresh ±0.5° joint noise
+python collect_urscript.py \
+  --config configs/urscript_config.yaml \
+  --dataset_name pick_place_diverse \
+  --task "pick and place red block" \
+  --urscript_file urscripts/example_pick.script \
+  --joint_jitter 0.01
+
+# Reproducible runs — same seed, same noise sequence
+... --joint_jitter 0.01 --jitter_seed 42
+
+# Only perturb specific waypoints (regex on the LHS variable name)
+... --joint_jitter 0.02 --jitter_pattern "Waypoint_3_q"      # one waypoint
+... --joint_jitter 0.02 --jitter_pattern "Waypoint_[345]_q"  # waypoints 3–5
+```
+
+Suggested magnitudes (rad; 1 rad ≈ 57°):
+
+| `--joint_jitter` | TCP displacement | Use |
+|---|---|---|
+| `0.005` (≈0.3°) | ~1–3 mm | Tight repeat with small coverage |
+| `0.01` (≈0.6°) | ~2–5 mm | **Recommended starting point** |
+| `0.02` (≈1.1°) | ~5–10 mm | Wider trajectory distribution |
+| `0.05` (≈3°)   | ~10–30 mm | Free-space waypoints only — risk of collision at grasp/insert poses |
+
+> **Safety**: the perturbation is applied blindly to every match. For
+> contact-critical waypoints (grasp, insert, screw), either narrow
+> `--jitter_pattern` to free-space points only, or rename the sensitive
+> variable in the `.script` so the regex won't match (e.g.
+> `Waypoint_5_qFIXED`).
+
+### One-off correction of a single waypoint
+
+If a specific waypoint is just slightly off (e.g. grasp pose drifted), edit
+the `global Waypoint_N_q=[...]` line directly in the `.script` file. Each
+of the six floats is one joint angle in radians (J0–J5). No regeneration
+needed — the next run picks up the change.
+
 ### Interactive session flow
 
 ```
@@ -440,50 +519,81 @@ Save this episode? [Y/n/q] y
 
 ---
 
-## Dataset output format (LeRobot v2.0)
+## Dataset output format (LeRobot v3.0)
+
+LeRobot v3.0 packs **many episodes per file** (size-rolled at ~100 MB for
+data parquet and ~200 MB for video mp4 by default) instead of v2's
+one-file-per-episode. Final layout after `finalize()`:
 
 ```
 datasets/<dataset_name>/
 ├── data/
 │   └── chunk-000/
-│       ├── episode_000000.parquet
-│       ├── episode_000001.parquet
-│       └── ...
+│       └── file-000.parquet              # all episodes' frames concatenated
+│                                          # (rolls to file-001.parquet at 100 MB)
 ├── videos/
-│   ├── cam_external_1/          # (Mode 1)
+│   ├── cam_external_1/
 │   │   └── chunk-000/
-│   │       └── episode_000000.mp4
+│   │       └── file-000.mp4              # all episodes' frames concatenated
+│   │                                      # (rolls to file-001.mp4 at 200 MB)
 │   └── cam_external_2/
 │       └── chunk-000/
-│           └── episode_000000.mp4
-└── meta/
-    ├── info.json                 # Dataset schema + stats
-    ├── episodes.jsonl            # Per-episode metadata
-    └── tasks.jsonl               # Task descriptions
+│           └── file-000.mp4
+├── meta/
+│   ├── info.json                          # codebase_version=v3.0, totals, paths
+│   ├── stats.json                          # aggregate dataset stats (mean/std/min/max)
+│   ├── tasks.parquet                       # task_string -> task_index
+│   └── episodes/
+│       └── chunk-000/
+│           └── file-000.parquet           # per-episode metadata + per-episode stats
+└── _staging/                              # cleaned up after finalize on user request
+                                            # (kept by default; safe to delete)
 ```
 
-Each `.parquet` file contains these columns per frame:
+> **Mid-collection safety** — episodes are first written under
+> `_staging/episode_NNNNNN.parquet` and `_staging/videos/<cam>/episode_NNNNNN.mp4`.
+> If you Ctrl+C during episode 7, episodes 0–6 are intact in staging and the
+> next session will resume the count. The chunk-rolled v3 files are produced
+> by `finalize()` (called automatically when you press `q` to quit the
+> collector). Until then, `data/chunk-*/` and `meta/` don't exist yet.
+
+Per-frame columns inside `data/chunk-XXX/file-YYY.parquet`:
 
 | Column | Type | Shape |
 |--------|------|-------|
 | `observation.state` | float32 list | (7,) |
 | `action` | float32 list | (7,) |
-| `observation.images.<cam>` | int64 | scalar (video frame index) |
 | `timestamp` | float32 | seconds since episode start |
 | `frame_index` | int64 | frame number within episode |
 | `episode_index` | int64 | episode number |
 | `index` | int64 | global frame number |
 | `next.done` | bool | True on last frame |
-| `task_index` | int64 | task ID |
+| `task_index` | int64 | task ID (matches `meta/tasks.parquet`) |
+
+Per-episode metadata columns inside `meta/episodes/chunk-XXX/file-YYY.parquet`:
+
+| Column | Notes |
+|--------|-------|
+| `episode_index`, `tasks`, `length` | basic episode info |
+| `dataset_from_index` / `dataset_to_index` | global frame range, exclusive end |
+| `data/chunk_index`, `data/file_index` | which `data/chunk-XXX/file-YYY.parquet` holds this episode |
+| `videos/<cam>/chunk_index`, `videos/<cam>/file_index` | which `videos/<cam>/chunk-XXX/file-YYY.mp4` holds it |
+| `videos/<cam>/from_timestamp`, `videos/<cam>/to_timestamp` | seconds inside that mp4 where the episode lives |
+| `stats/<feature>/{mean,std,min,max,count}` | per-episode stats, flattened |
+| `meta/episodes/chunk_index`, `meta/episodes/file_index` | self-reference (where this metadata row itself lives) |
 
 ### Loading with lerobot
 
 ```python
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset  # v3.0 module path
 
 dataset = LeRobotDataset("datasets/my_pick_place", local_files_only=True)
 print(dataset[0])  # first frame
 ```
+
+> **Note**: in lerobot v3.0 the import path moved from
+> `lerobot.common.datasets.lerobot_dataset` (v2) to
+> `lerobot.datasets.lerobot_dataset`.
 
 ---
 
@@ -524,6 +634,8 @@ marked with `# ADAPT`. Specifically:
 | `RuntimeError: Frame didn't arrive within 5000` (or 10000) **right after** the camera enumerates fine | **USB-2 link** — the camera is on a USB-3 port but the **cable is USB-2 only** (very common with the short cables shipped in random USB-C cable bags). Run `python preview_cameras.py` and check the printed `usb_type` field — if it says `2.1`, swap the cable for a SuperSpeed (SS-marked, blue tip, ideally ≤1 m) USB-A↔USB-C cable. The D435i firmware refuses to start the 640×480@30 color stream over USB 2 and the device will then drop off the bus until you replug. |
 | `serial.serialutil.SerialException: could not open port 'COM3'` | Either the port name is wrong (check Device Manager) or another program (e.g. Pika's vendor GUI, Arduino IDE serial monitor) holds the port. Close it and retry. |
 | `RTDEControlInterface: failed to connect` | (a) `ping <robot_ip>` first — wrong subnet is the most common cause. (b) On the pendant, switch the controller to **Remote Control**. (c) Allow Python through Windows Defender Firewall on the *Private* profile. |
+| `RuntimeError: read: End of file [asio.misc:2]` from `RTDEReceiveInterface` | TCP handshake succeeded but the controller closed the RTDE connection. (a) Check the IP — note `169.254.x.x` is link-local (auto-IP), `168.254.x.x` is a public-internet address; a 1-character typo here lets `ping` succeed against a random server but fails RTDE. Use `python -c "import socket; s=socket.create_connection(('<ip>',29999),timeout=3); print(s.recv(256).decode())"` — if the banner is not "Universal Robots Dashboard Server", the IP is wrong. (b) Robot is in `IDLE` / `POWER_OFF` — press **ON → START** on the pendant to release the brakes. (c) Lower `frequency` in the config from `500.0` to `125.0` for older firmware. |
+| `--urscript_file` runs but the robot doesn't move (recording captures a stationary trajectory) | Three usual culprits: (a) The collector opened `RTDEControlInterface`, whose keep-alive thread re-uploaded its own script over yours — fixed in this repo by auto-skipping `RTDEControl` when `--urscript_file` is given. (b) The script was sent to port 30001/30002 which PolyScope X locks down — this repo now uses port **30003** (Realtime). (c) The script defines `def P1():` but never calls it — auto-handled (you'll see `Auto-appended call to top-level function 'P1()'` in the log). If you still see `Dashboard: Program running: false`, the script was rejected — read the pendant **Log** tab for the controller's actual error. |
 | Wrist camera opens the wrong device (e.g. laptop webcam) | Increment `device_index` in `pika_config.yaml` (try 1, 2, …). On Windows, the integrated webcam usually grabs index 0. |
 | `mp4v` warning when saving videos | Install `ffmpeg` and ensure it is on PATH. Verify with `ffmpeg -version` *before* starting the collector. |
 | Collector freezes after Ctrl+C in PowerShell | Use Ctrl+C only **once**, then wait — episode finalisation (parquet + mp4 encoding) can take a few seconds per minute of footage. |

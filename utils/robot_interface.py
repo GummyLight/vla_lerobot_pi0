@@ -154,20 +154,34 @@ class UR7eInterface:
 
         # Give the controller a moment to compile and start the program
         # before we poll state — otherwise dashboard reports running=false
-        # purely because the script hasn't begun yet.
+        # purely because the script hasn't begun yet. Then poll repeatedly
+        # so a slow-compiling 80 KB program isn't flagged as failed just
+        # because our first check landed in the compile window.
         time.sleep(post_send_sleep)
-        try:
-            running = self._dashboard("running")
-            print(f"[Robot] Dashboard: {running}")
-            if "true" not in running.lower():
-                print("[Robot] !! Program does NOT appear to be running. Check:")
-                print("           - PolyScope is in Remote Control mode")
-                print("           - No other program is loaded with errors on the pendant")
-                print("           - The pendant Log (menu -> Log) for the actual error")
-                print("           - The script doesn't reference URCap functions that")
-                print("             aren't installed (rq_*, etc.)")
-        except Exception as e:
-            print(f"[Robot] Could not query dashboard: {e}")
+        deadline = time.time() + 4.0
+        last_reply = ""
+        running = False
+        while time.time() < deadline:
+            try:
+                last_reply = self._dashboard("running")
+                if "true" in last_reply.lower():
+                    running = True
+                    break
+            except Exception as e:
+                last_reply = f"<dashboard error: {e}>"
+            time.sleep(0.3)
+
+        if running:
+            print(f"[Robot] Dashboard: {last_reply}")
+        else:
+            print(f"[Robot] !! Program did NOT start within {time.time() - (deadline - 4.0):.1f}s.")
+            print(f"           Last dashboard reply: {last_reply}")
+            print("           Common causes:")
+            print("           - PolyScope not in Remote Control mode")
+            print("           - Joint jitter too large -> IK failure (try --joint_jitter 0.01)")
+            print("           - URCap functions in the script not installed (rq_*, etc.)")
+            print("           - Another program loaded with errors on the pendant")
+            print("           Check the pendant Log tab for the controller's actual error.")
 
     def send_urscript_file(self, path: str):
         with open(path, encoding="utf-8") as f:
