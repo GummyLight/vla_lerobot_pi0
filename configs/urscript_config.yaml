@@ -4,7 +4,8 @@
 # ============================================================
 
 robot:
-  host: "169.254.175.10"       # UR7e controller IP address
+  host: "192.168.1.100"        # UR7e controller IP — set to whatever you read
+                               # off the teach pendant (Settings → Network).
   frequency: 500.0             # RTDE receive frequency (Hz)
 
 gripper:
@@ -12,17 +13,24 @@ gripper:
   type: "robotiq_2f58"
 
 cameras:
-  # Single-camera setup. To add a second D435i, copy this block and give
-  # both `name` and `serial` distinct values.
-  - name: cam_external_1
-    serial: ""                 # Empty = use first available D435i.
-                               # To pin to a specific camera, run
-                               #   python preview_cameras.py
-                               # and paste its serial number here.
+  # Two-camera setup. Each camera MUST have an explicit `serial` — empty
+  # serials with multiple cameras would race on which physical device gets
+  # assigned to which name and the mapping changes between runs.
+  # Run  python preview_cameras.py --all  to list the connected serials,
+  # then paste them below.
+  - name: cam_global              # static external view of the workspace
+    serial: ""                    # paste the D435i serial here
     width: 640
     height: 480
     fps: 30
-    enable_depth: false        # Set true to also capture depth frames
+    enable_depth: false           # Set true to also capture depth frames
+
+  - name: cam_wrist               # mounted on the end-effector, moves with the arm
+    serial: ""                    # paste the D435i serial here
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false
 
 collection:
   fps: 30                      # Recording frame rate (must be <= camera fps)

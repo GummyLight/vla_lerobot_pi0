@@ -62,6 +62,26 @@ def _update_chunk_file_indices(chunk_idx: int, file_idx: int,
     return chunk_idx, file_idx + 1
 
 
+def _video_feature_key(cam: str) -> str:
+    """Map a short camera name (e.g. ``cam_global``) to its full lerobot
+    feature key (``observation.images.cam_global``). lerobot v3 uses the
+    full key both for the directory under ``videos/`` and for the
+    ``videos/<key>/{chunk_index,file_index,...}`` columns in the
+    per-episode meta parquet."""
+    return cam if cam.startswith("observation.images.") else f"observation.images.{cam}"
+
+
+# ImageNet defaults — lerobot expects per-channel stats with shape (C, 1, 1)
+# for image/video features. These are placeholders; the loader can recompute
+# from the raw frames if `use_imagenet_stats=False`.
+IMAGENET_STATS = {
+    "mean": [[[0.485]], [[0.456]], [[0.406]]],
+    "std":  [[[0.229]], [[0.224]], [[0.225]]],
+    "min":  [[[0.0]],   [[0.0]],   [[0.0]]],
+    "max":  [[[1.0]],   [[1.0]],   [[1.0]]],
+}
+
+
 # ----------------------------------------------------------------------
 # Public writer
 # ----------------------------------------------------------------------
@@ -137,7 +157,12 @@ class LeRobotWriter:
 
         # Per-episode buffers
         self._rows: List[dict] = []
-        self._video_writers: Dict[str, cv2.VideoWriter] = {}
+        # Writers may be cv2.VideoWriter or _FFmpegVideoWriter (same API).
+        self._video_writers: Dict[str, object] = {}
+        # Track which writer kind was used per camera so end_episode() can
+        # skip the redundant re-encode pass when ffmpeg already produced
+        # CFR H.264 directly.
+        self._video_writer_via_ffmpeg: Dict[str, bool] = {}
         self._episode_task: str = ""
         self._ep_start: float = 0.0
 
@@ -170,6 +195,7 @@ class LeRobotWriter:
         self._episode_task = task
         self._ep_start = time.time()
         self._video_writers = {}
+        self._video_writer_via_ffmpeg = {}
 
     def add_frame(
         self,
@@ -179,24 +205,33 @@ class LeRobotWriter:
         timestamp: Optional[float] = None,
         done: bool = False,
     ):
-        if timestamp is None:
-            timestamp = time.time() - self._ep_start
-
+        # `timestamp` is accepted for API compatibility but ignored — lerobot
+        # v3 requires the canonical timestamp = frame_index / fps (its frame
+        # tolerance is 1e-4 s, so wallclock drift breaks the loader).
+        del timestamp
         frame_idx = len(self._rows)
+        canonical_ts = frame_idx / float(self.fps)
 
         # Lazy-create video writers on first frame so we know the image size.
+        # Prefer the ffmpeg pipe writer (CFR H.264 in one pass); fall back to
+        # cv2 mp4v + post-encode when ffmpeg isn't on PATH.
+        use_ffmpeg = _ffmpeg_available()
         for cam_key, img in images.items():
             if cam_key not in self._video_writers and cam_key in self.camera_keys:
                 h, w = img.shape[:2]
                 vpath = self._staged_video_path(cam_key, self.episode_index)
                 vpath.parent.mkdir(parents=True, exist_ok=True)
-                writer = cv2.VideoWriter(
-                    str(vpath),
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    self.fps,
-                    (w, h),
-                )
+                if use_ffmpeg:
+                    writer = _FFmpegVideoWriter(vpath, self.fps, w, h)
+                else:
+                    writer = cv2.VideoWriter(
+                        str(vpath),
+                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        self.fps,
+                        (w, h),
+                    )
                 self._video_writers[cam_key] = writer
+                self._video_writer_via_ffmpeg[cam_key] = use_ffmpeg
 
         for cam_key, img in images.items():
             if cam_key in self._video_writers:
@@ -205,7 +240,7 @@ class LeRobotWriter:
         row = {
             "observation.state": list(state.astype(np.float32)),
             "action": list(action.astype(np.float32)),
-            "timestamp": float(timestamp),
+            "timestamp": float(canonical_ts),
             "frame_index": frame_idx,
             "episode_index": self.episode_index,
             "index": self.global_index,
@@ -236,11 +271,13 @@ class LeRobotWriter:
             for i, row in enumerate(self._rows):
                 row["action"] = states[i + 1] if i + 1 < len(states) else states[i]
 
-        # Re-encode mp4v -> H.264 for compatibility with the lerobot loader.
+        # When ffmpeg pipe was used, the staged file is already CFR H.264 —
+        # skip the redundant re-encode. The cv2-fallback path still needs
+        # re-encoding (forces both codec and CFR).
         for cam_key in self.camera_keys:
             vpath = self._staged_video_path(cam_key, self.episode_index)
-            if vpath.exists():
-                _reencode_h264(vpath)
+            if vpath.exists() and not self._video_writer_via_ffmpeg.get(cam_key, False):
+                _reencode_h264(vpath, self.fps)
 
         # Write the per-episode staging parquet (final fields filled in finalize).
         pq_path = self._staged_parquet_path(self.episode_index)
@@ -266,7 +303,16 @@ class LeRobotWriter:
     # finalize() — pack staged episodes into LeRobot v3.0 layout
     # ------------------------------------------------------------------
 
-    def finalize(self):
+    def finalize(self, *, keep_staging: bool = False, sanity_check: bool = True):
+        """Pack staged per-episode artefacts into the v3 layout.
+
+        Args:
+            keep_staging: if True, leave ``_staging/`` in place (useful for
+                debugging or re-running finalize). Default False — the
+                staging dir is removed once the v3 files are written.
+            sanity_check: if True, do a quick structural check on the
+                produced layout (and try to load via lerobot if installed).
+        """
         n_staged = self._count_staged_episodes()
         if n_staged == 0:
             print("\n[Writer] Nothing staged — finalize() is a no-op.")
@@ -457,6 +503,13 @@ class LeRobotWriter:
         print(f"  Frames           : {running_global_idx}")
         print(f"  Tasks            : {len(unique_tasks)}")
 
+        if sanity_check:
+            self._sanity_check()
+
+        if not keep_staging and self.staging_dir.exists():
+            shutil.rmtree(self.staging_dir, ignore_errors=True)
+            print(f"  Cleaned staging : {self.staging_dir.name}/")
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -468,13 +521,18 @@ class LeRobotWriter:
     def _normalize_frame_df(self, ep_df: pd.DataFrame, ep_index: int,
                             ep_len: int, running_global_idx: int,
                             task_index: int) -> pd.DataFrame:
-        """Patch the per-episode frame DataFrame so the global `index` and
-        `task_index` columns line up with the multi-episode roll-up."""
+        """Patch the per-episode frame DataFrame so the global `index`,
+        `task_index` and `timestamp` columns line up with the multi-episode
+        roll-up. `timestamp` is overwritten with the canonical
+        ``frame_index / fps`` (lerobot v3's frame-lookup tolerance is 1e-4 s,
+        so wallclock-derived timestamps fail the check)."""
         df = ep_df.copy()
         df["episode_index"] = ep_index
         df["index"] = np.arange(running_global_idx,
                                 running_global_idx + ep_len, dtype=np.int64)
         df["task_index"] = task_index
+        df["frame_index"] = np.arange(ep_len, dtype=np.int64)
+        df["timestamp"] = (np.arange(ep_len, dtype=np.float32) / float(self.fps))
         return df
 
     def _concat_video_chunk(self, cam: str, vstate: dict):
@@ -482,7 +540,7 @@ class LeRobotWriter:
         chunk-XXX/file-YYY.mp4. Uses ffmpeg `-c copy` when available (fast +
         lossless), falls back to OpenCV re-mux otherwise."""
         out = self._abs(VIDEO_PATH_TPL.format(
-            video_key=cam,
+            video_key=_video_feature_key(cam),
             chunk_index=vstate["chunk_idx"],
             file_index=vstate["file_idx"],
         ))
@@ -495,12 +553,18 @@ class LeRobotWriter:
             return
 
         if _ffmpeg_available():
-            # Build ffmpeg concat-demuxer list
-            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
-                                             encoding="utf-8") as listf:
-                for vpath in inputs:
-                    listf.write(f"file '{vpath.as_posix()}'\n")
-                list_path = Path(listf.name)
+            # Write the concat list inside our staging directory rather than
+            # the system temp dir — on Windows with a non-ASCII username
+            # (e.g. C:\Users\李昶瑾\AppData\Local\Temp\), ffmpeg's
+            # concat-demuxer can't open the list file and silently fails.
+            list_path = self.staging_dir / f"_concat_{cam}_chunk{vstate['chunk_idx']:03d}_file{vstate['file_idx']:03d}.txt"
+            # ffmpeg's concat demuxer resolves entries RELATIVE to the list
+            # file's directory. Always write absolute paths so it doesn't
+            # matter where the list lives.
+            list_path.write_text(
+                "".join(f"file '{vpath.resolve().as_posix()}'\n" for vpath in inputs),
+                encoding="utf-8",
+            )
             try:
                 tmp_out = out.with_suffix(".concat.tmp.mp4")
                 result = subprocess.run([
@@ -510,9 +574,13 @@ class LeRobotWriter:
                     str(tmp_out),
                 ], capture_output=True)
                 if result.returncode != 0:
+                    err = result.stderr.decode(errors="replace")
+                    # Show the tail of stderr — that's where the real error is.
+                    # The first ~1 KB is just ffmpeg's version banner.
+                    err_tail = err[-2000:] if len(err) > 2000 else err
                     raise RuntimeError(
-                        f"ffmpeg concat failed for {cam}: "
-                        f"{result.stderr.decode(errors='replace')[:500]}"
+                        f"ffmpeg concat failed for {cam} "
+                        f"(list: {list_path}):\n...\n{err_tail}"
                     )
                 if out.exists():
                     out.unlink()
@@ -558,10 +626,11 @@ class LeRobotWriter:
             "data/file_index": data_file,
         }
         for cam, vm in video_meta.items():
-            row[f"videos/{cam}/chunk_index"] = vm["chunk_idx"]
-            row[f"videos/{cam}/file_index"] = vm["file_idx"]
-            row[f"videos/{cam}/from_timestamp"] = float(vm["from_ts"])
-            row[f"videos/{cam}/to_timestamp"] = float(vm["to_ts"])
+            vk = _video_feature_key(cam)
+            row[f"videos/{vk}/chunk_index"] = vm["chunk_idx"]
+            row[f"videos/{vk}/file_index"] = vm["file_idx"]
+            row[f"videos/{vk}/from_timestamp"] = float(vm["from_ts"])
+            row[f"videos/{vk}/to_timestamp"] = float(vm["to_ts"])
         for feat, st in stats.items():
             for stat_name, val in st.items():
                 row[f"stats/{feat}/{stat_name}"] = val
@@ -680,8 +749,55 @@ class LeRobotWriter:
                 "count": [n],
             }
 
+        # lerobot's loader expects every video feature to have a stats entry.
+        # We seed with ImageNet defaults; the loader will substitute computed
+        # values when use_imagenet_stats=False.
+        total_frames = int(total_count) if total_count else 1
+        for cam in self.camera_keys:
+            feat = _video_feature_key(cam)
+            result[feat] = {
+                **{k: v for k, v in IMAGENET_STATS.items()},
+                "count": [total_frames],
+            }
+
         out.write_text(json.dumps(result, indent=2, ensure_ascii=False),
                        encoding="utf-8")
+
+    def _sanity_check(self):
+        """Confirm the v3 layout is loadable. Falls back to a structural
+        check if lerobot isn't installed in this environment."""
+        info = json.loads((self.root / INFO_PATH).read_text(encoding="utf-8"))
+        stats = json.loads((self.root / STATS_PATH).read_text(encoding="utf-8"))
+        for k, v in info["features"].items():
+            if v["dtype"] != "video":
+                continue
+            vdir = self.root / "videos" / k
+            if not vdir.exists():
+                raise RuntimeError(
+                    f"[sanity] missing video dir for feature {k!r}: {vdir}"
+                )
+            if k not in stats:
+                raise RuntimeError(
+                    f"[sanity] stats.json missing entry for video feature {k!r}"
+                )
+
+        try:
+            from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore
+        except Exception as e:
+            print(f"  Sanity check    : structural OK "
+                  f"(lerobot not importable here: {type(e).__name__})")
+            return
+
+        try:
+            ds = LeRobotDataset(repo_id="local/sanity", root=str(self.root))
+            _ = ds[0]
+            _ = ds[len(ds) // 2]
+            print(f"  Sanity check    : OK "
+                  f"({ds.num_episodes} eps / {ds.num_frames} frames)")
+        except Exception as e:
+            raise RuntimeError(
+                f"[sanity] LeRobotDataset load failed: {type(e).__name__}: {e}"
+            ) from e
 
     def _write_info_json(self, total_episodes: int, total_frames: int,
                          total_tasks: int):
@@ -743,18 +859,89 @@ def _ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def _reencode_h264(path: Path):
-    """Re-encode mp4v -> H.264 in-place using ffmpeg if available.
-    Silently no-ops (leaves the mp4v file) when ffmpeg is missing."""
+class _FFmpegVideoWriter:
+    """Writes BGR frames as constant-frame-rate H.264 mp4 by piping into a
+    ffmpeg subprocess. Mimics the ``cv2.VideoWriter`` API
+    (``write(frame)`` + ``release()``).
+
+    Why this exists: ``cv2.VideoWriter`` + a separate ffmpeg re-encode pass
+    can leak variable-frame-rate timestamps into the final mp4. lerobot's
+    default frame-lookup tolerance is 1e-4 s, so even sub-millisecond PTS
+    drift trips ``FrameTimestampError``. Piping raw frames into ffmpeg with
+    ``-fps_mode cfr -r {fps}`` produces clean CFR output in one step.
+    """
+
+    def __init__(self, path: Path, fps: float, width: int, height: int,
+                 crf: int = 18):
+        self._path = path
+        self._proc = subprocess.Popen(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "rawvideo",
+                "-pix_fmt", "bgr24",
+                "-s", f"{width}x{height}",
+                "-r", str(fps),                 # input frame rate
+                "-i", "-",
+                "-c:v", "libx264", "-crf", str(crf),
+                "-pix_fmt", "yuv420p",
+                "-r", str(fps),                 # output frame rate
+                "-fps_mode", "cfr",             # force constant frame rate
+                str(path),
+            ],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self._closed = False
+        self._broken = False
+
+    def write(self, frame):
+        if self._closed or self._broken:
+            return
+        try:
+            self._proc.stdin.write(frame.tobytes())
+        except (BrokenPipeError, OSError):
+            # ffmpeg crashed; surface the real error in release()
+            self._broken = True
+
+    def release(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            ret = self._proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+            raise RuntimeError(
+                f"ffmpeg pipe writer for {self._path} timed out on close"
+            )
+        if ret != 0:
+            err = self._proc.stderr.read().decode(errors="replace")
+            raise RuntimeError(
+                f"ffmpeg pipe writer exited {ret} for {self._path}:\n"
+                f"...\n{err[-2000:]}"
+            )
+
+
+def _reencode_h264(path: Path, fps: float):
+    """Re-encode in-place to constant-frame-rate H.264 using ffmpeg if
+    available. Silently no-ops when ffmpeg is missing (file stays in
+    whatever codec/timing the cv2 fallback produced)."""
     if not _ffmpeg_available():
         return
     tmp = path.with_suffix(".tmp.mp4")
     path.rename(tmp)
     result = subprocess.run(
         [
-            "ffmpeg", "-y", "-i", str(tmp),
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(tmp),
             "-vcodec", "libx264", "-crf", "18",
             "-pix_fmt", "yuv420p",
+            "-r", str(fps),         # force output frame rate
+            "-fps_mode", "cfr",     # force constant frame rate
             str(path),
         ],
         capture_output=True,

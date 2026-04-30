@@ -280,7 +280,7 @@ small helper that does the same thing and adds USB-friendly defaults
 
 ```bash
 python preview_cameras.py                       # preview the first camera found
-python preview_cameras.py --serial 405622074939 # preview a specific camera
+python preview_cameras.py --serial <D435i_serial> # preview a specific camera
 python preview_cameras.py --all                 # both cameras side by side
 python preview_cameras.py --all --fps 15        # halve the USB bandwidth
 ```

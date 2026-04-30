@@ -16,8 +16,12 @@ pika_sense:
   baudrate: 115200
 
 cameras:
-  # External D435i (side/front view)
-  - name: cam_external
+  # External D435i (side/front view of the workspace).
+  # Name kept in sync with urscript_config.yaml so both collection modes
+  # produce datasets with the same feature keys (observation.images.cam_global,
+  # observation.images.cam_wrist) — checkpoints trained on one mode load
+  # cleanly on the other.
+  - name: cam_global
     serial: ""                 # D435i serial number; empty = first found
     width: 640
     height: 480
