@@ -9,13 +9,14 @@ Currently set up for **pi0** on the `open_3d_printer_*` datasets.
 
 ```
 VLA training/
-├── datasets/                          # LeRobot v2.0 datasets (input)
+├── datasets/                          # LeRobot v3.0 datasets (input)
 │   ├── open_3d_printer_diversified/   # train
 │   └── open_3d_printer_test/          # held-out for eval
 ├── scripts/
 │   ├── train_pi0.sh                   # one-line wrapper to launch training
 │   ├── train_pi0.py                   # python entrypoint, --method=full|lora|frozen
 │   ├── eval_pi0.py                    # offline eval on a held-out lerobot dataset
+│   ├── run_pi0_robot.py               # closed-loop inference on a real UR + Robotiq + 2× RealSense
 │   ├── compare_methods.py             # eval all trained methods + write csv
 │   └── compute_stats.py               # compute meta/stats.json if missing
 ├── configs/
@@ -28,19 +29,18 @@ VLA training/
 ## Dataset format check
 
 Both `datasets/open_3d_printer_diversified/` and `datasets/open_3d_printer_test/`
-are **LeRobot v2.0** datasets. Confirmed:
+are **LeRobot v3.0** datasets. Confirmed:
 
-- ✅ `meta/info.json` with `codebase_version: v2.0`
-- ✅ `meta/episodes.jsonl`, `meta/tasks.jsonl`
-- ✅ `data/chunk-000/episode_*.parquet`
-- ✅ `videos/cam_external_1/chunk-000/episode_*.mp4`
-- ✅ Features: `observation.state` (7-d), `action` (7-d), `observation.images.cam_external_1` (480×640×3 video), task language strings
-- ⚠️ **Missing `meta/stats.json`** — required by LeRobot v2.0 for normalization. Run `python scripts/compute_stats.py datasets/open_3d_printer_diversified` once before training. (Same for the test dataset before eval.)
+- ✅ `meta/info.json` with `codebase_version: v3.0`
+- ✅ `meta/tasks.parquet`, `meta/stats.json`, `meta/episodes/chunk-000/file-000.parquet`
+- ✅ `data/chunk-000/file-000.parquet` (multiple episodes packed per file)
+- ✅ `videos/observation.images.cam_global/chunk-000/file-000.mp4` and `.../cam_wrist/...`
+- ✅ Features: `observation.state` (7-d = 6 joints + gripper), `action` (7-d), two 480×640×3 video streams (`cam_global`, `cam_wrist`), task language strings
 
 Other notes:
 - `robot_type` is `"ur7e"` (Universal Robots e-Series UR7e).
-- Single camera (`cam_external_1`) only.
-- 12 episodes / 4570 frames in the diversified set.
+- Two cameras: `cam_global` (workspace view) + `cam_wrist` (end-effector view).
+- 110 episodes / 48,756 frames in the diversified set, 30 fps, 2 tasks (open / close 3D printer).
 
 ## Setup (conda — recommended)
 

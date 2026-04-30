@@ -9,13 +9,14 @@
 
 ```
 VLA training/
-├── datasets/                          # LeRobot v2.0 数据集（输入）
+├── datasets/                          # LeRobot v3.0 数据集（输入）
 │   ├── open_3d_printer_diversified/   # 训练集
 │   └── open_3d_printer_test/          # 留出做评估
 ├── scripts/
 │   ├── train_pi0.sh                   # 一行启动训练（bash）
 │   ├── train_pi0.py                   # Python 入口，--method=full|lora|frozen
 │   ├── eval_pi0.py                    # 在留出 lerobot 数据集上做离线评估
+│   ├── run_pi0_robot.py               # 真机闭环推理（UR + Robotiq + 双 RealSense）
 │   ├── compare_methods.py             # 对所有训过的方法做评估并出 csv 对比表
 │   └── compute_stats.py               # 缺失时计算 meta/stats.json
 ├── configs/
@@ -28,21 +29,18 @@ VLA training/
 ## 数据集格式检查
 
 `datasets/open_3d_printer_diversified/` 和 `datasets/open_3d_printer_test/` 均为
-**LeRobot v2.0** 格式，已确认：
+**LeRobot v3.0** 格式，已确认：
 
-- ✅ `meta/info.json`，`codebase_version: v2.0`
-- ✅ `meta/episodes.jsonl`、`meta/tasks.jsonl`
-- ✅ `data/chunk-000/episode_*.parquet`
-- ✅ `videos/cam_external_1/chunk-000/episode_*.mp4`
-- ✅ 特征：`observation.state`（7 维）、`action`（7 维）、`observation.images.cam_external_1`（480×640×3 视频）、任务语言字符串
-- ⚠️ **缺 `meta/stats.json`** —— LeRobot v2.0 训练时用它做归一化。训练前请先跑一次：
-  `python scripts/compute_stats.py datasets/open_3d_printer_diversified`
-  （评估前对 test 数据集同样跑一遍）
+- ✅ `meta/info.json`，`codebase_version: v3.0`
+- ✅ `meta/tasks.parquet`、`meta/stats.json`、`meta/episodes/chunk-000/file-000.parquet`
+- ✅ `data/chunk-000/file-000.parquet`（多条 episode 打包在一个文件里）
+- ✅ `videos/observation.images.cam_global/chunk-000/file-000.mp4` 以及 `.../cam_wrist/...`
+- ✅ 特征：`observation.state`（7 维 = 6 关节 + 夹爪）、`action`（7 维）、两路 480×640×3 视频流（`cam_global`、`cam_wrist`）、任务语言字符串
 
 其他备注：
 - `robot_type` 是 `"ur7e"`（Universal Robots e-Series UR7e）。
-- 只有单相机 `cam_external_1`。
-- diversified 数据集共 12 个 episode / 4570 帧。
+- 双相机：`cam_global`（全局工位视角） + `cam_wrist`（手腕末端视角）。
+- diversified 数据集共 110 个 episode / 48,756 帧，30 fps，2 个任务（开 / 关 3D 打印机）。
 
 ## 环境安装（conda — 推荐）
 

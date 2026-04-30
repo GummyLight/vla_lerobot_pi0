@@ -9,3 +9,7 @@ matplotlib
 tqdm
 pyarrow
 imageio[ffmpeg]
+
+# Real-robot inference (scripts/run_pi0_robot.py)
+ur_rtde            # UR control via RTDE
+pyrealsense2       # Intel RealSense D435i/D455 capture

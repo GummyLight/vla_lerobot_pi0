@@ -16,7 +16,15 @@ Usage:
         --policy-path outputs/train/pi0_3d_printer_lora/checkpoints/005000/pretrained_model \\
         --task "open the 3D printer" \\
         --robot-ip 192.168.1.100 \\
+        --cam-global-serial 1234567890 \\
+        --cam-wrist-serial 0987654321 \\
         --max-seconds 30
+
+Hardware assumptions (filled in for the current rig):
+- Two Intel RealSense D435i/D455 (one as cam_global, one as cam_wrist), 640x480 RGB @ 30Hz.
+  Find serials with `rs-enumerate-devices` or pyrealsense2 `rs.context().devices`.
+- Robotiq 2F-85/140 plugged into the UR control box; the UR-side URCap exposes
+  the gripper on tcp://<robot_ip>:63352. We talk to it directly over that socket.
 """
 
 from __future__ import annotations
@@ -53,6 +61,12 @@ def parse_args() -> argparse.Namespace:
                     default=REPO_ROOT / "outputs/train/pi0_3d_printer_lora/checkpoints/005000/pretrained_model")
     ap.add_argument("--task", required=True, help="Language instruction, e.g. 'open the 3D printer'")
     ap.add_argument("--robot-ip", required=True, help="UR controller IP")
+    ap.add_argument("--cam-global-serial", default=None,
+                    help="RealSense serial for cam_global. If omitted, picks the first device.")
+    ap.add_argument("--cam-wrist-serial", default=None,
+                    help="RealSense serial for cam_wrist. If omitted, picks the second device.")
+    ap.add_argument("--gripper-port", type=int, default=63352,
+                    help="UR-side Robotiq URCap socket port (default 63352).")
     ap.add_argument("--max-seconds", type=float, default=30.0,
                     help="Hard cutoff for the rollout (safety).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -62,40 +76,132 @@ def parse_args() -> argparse.Namespace:
 
 
 # ============================================================================
-# === HARDWARE_TODO: Camera capture
+# RealSense camera capture (cam_global + cam_wrist)
 # ============================================================================
 class Cameras:
-    """Adapter around your two cameras. Returns frames as uint8 HxWxC RGB arrays.
+    """Two Intel RealSense streams returning uint8 H×W×3 RGB arrays.
 
-    Default impl uses OpenCV `cv2.VideoCapture`. Replace with pyrealsense2 etc.
-    if you use Intel RealSense / Zed / GigE cameras.
+    Each RealSense is selected by serial number so the global/wrist mapping
+    survives reboots and re-plugging. Pass --cam-*-serial on the CLI; if
+    omitted, we fall back to the first/second enumerated device (fragile —
+    only fine for first-time poking).
     """
 
-    def __init__(self, global_idx: int = 0, wrist_idx: int = 1, height: int = 480, width: int = 640):
-        import cv2
-        self.cv2 = cv2
-        self.cap_global = cv2.VideoCapture(global_idx)
-        self.cap_wrist = cv2.VideoCapture(wrist_idx)
-        for cap in (self.cap_global, self.cap_wrist):
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-        if not self.cap_global.isOpened() or not self.cap_wrist.isOpened():
-            raise RuntimeError("could not open both cameras")
+    WIDTH = 640
+    HEIGHT = 480
+    FPS = 30
+
+    def __init__(self, global_serial: str | None, wrist_serial: str | None):
+        try:
+            import pyrealsense2 as rs
+        except ImportError as e:
+            raise ImportError(
+                "pyrealsense2 not installed. `pip install pyrealsense2`."
+            ) from e
+        self.rs = rs
+
+        if global_serial is None or wrist_serial is None:
+            ctx = rs.context()
+            devs = list(ctx.devices)
+            if len(devs) < 2:
+                raise RuntimeError(
+                    f"need 2 RealSense devices, found {len(devs)}. "
+                    "Plug both in, or pass explicit --cam-*-serial."
+                )
+            serials = [d.get_info(rs.camera_info.serial_number) for d in devs]
+            print(f"⚠ no serials given; auto-picking from enumeration order: {serials}")
+            if global_serial is None:
+                global_serial = serials[0]
+            if wrist_serial is None:
+                wrist_serial = serials[1] if serials[1] != global_serial else serials[0]
+
+        if global_serial == wrist_serial:
+            raise ValueError("cam_global and cam_wrist serials must differ")
+
+        self.pipe_global = self._open(global_serial)
+        self.pipe_wrist = self._open(wrist_serial)
+        # Drop a few warmup frames so AE/AWB stabilise before we start the loop.
+        for _ in range(5):
+            self.pipe_global.wait_for_frames()
+            self.pipe_wrist.wait_for_frames()
+
+    def _open(self, serial: str):
+        rs = self.rs
+        cfg = rs.config()
+        cfg.enable_device(serial)
+        cfg.enable_stream(rs.stream.color, self.WIDTH, self.HEIGHT, rs.format.rgb8, self.FPS)
+        pipe = rs.pipeline()
+        pipe.start(cfg)
+        return pipe
 
     def read(self) -> tuple[np.ndarray, np.ndarray]:
-        ok1, frame_global = self.cap_global.read()
-        ok2, frame_wrist = self.cap_wrist.read()
-        if not (ok1 and ok2):
-            raise RuntimeError("camera read failed")
-        # OpenCV is BGR, dataset stored RGB.
-        frame_global = self.cv2.cvtColor(frame_global, self.cv2.COLOR_BGR2RGB)
-        frame_wrist = self.cv2.cvtColor(frame_wrist, self.cv2.COLOR_BGR2RGB)
-        return frame_global, frame_wrist
+        # wait_for_frames blocks up to 5s by default; that's fine at 30Hz.
+        f_g = self.pipe_global.wait_for_frames().get_color_frame()
+        f_w = self.pipe_wrist.wait_for_frames().get_color_frame()
+        if not f_g or not f_w:
+            raise RuntimeError("RealSense returned empty color frame")
+        # rgb8 -> already RGB, matches dataset.
+        return np.asanyarray(f_g.get_data()), np.asanyarray(f_w.get_data())
 
     def close(self) -> None:
-        self.cap_global.release()
-        self.cap_wrist.release()
+        try:
+            self.pipe_global.stop()
+        finally:
+            self.pipe_wrist.stop()
+
+
+# ============================================================================
+# Robotiq 2F-85/140 over UR's URCap socket (port 63352)
+# ============================================================================
+class RobotiqGripper:
+    """Minimal client for the Robotiq URCap socket on the UR controller.
+
+    The URCap exposes a line-based protocol on tcp://<robot_ip>:63352:
+        SET POS <0..255>\n  -> 'ack\n'
+        GET POS\n           -> 'POS <0..255>\n'
+        SET ACT 1\n         -> activates the gripper if not yet activated
+        SET GTO 1\n         -> enables go-to-position
+    Position is the gripper's internal scale: 0 = fully open, 255 = fully closed.
+    """
+
+    def __init__(self, ip: str, port: int = 63352, timeout: float = 2.0):
+        import socket
+        self._socket = socket
+        self.sock = socket.create_connection((ip, port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        # Activate + enable GTO. Idempotent: re-running on an already-active
+        # gripper is harmless. If your URCap auto-activates on URe-boot you
+        # can drop these, but they are cheap.
+        self._cmd("SET ACT 1")
+        self._cmd("SET GTO 1")
+        # Reasonable default speed/force; tune to your task.
+        self._cmd("SET SPE 200")
+        self._cmd("SET FOR 100")
+
+    def _cmd(self, line: str) -> str:
+        self.sock.sendall((line + "\n").encode("ascii"))
+        return self.sock.recv(1024).decode("ascii", errors="replace").strip()
+
+    def read_position(self) -> float:
+        """Return current position in [0, 1]: 0=open, 1=closed (matches dataset)."""
+        reply = self._cmd("GET POS")
+        # Reply format: 'POS <int>'
+        try:
+            raw = int(reply.split()[-1])
+        except (ValueError, IndexError):
+            return 0.0
+        return max(0.0, min(1.0, raw / 255.0))
+
+    def write_position(self, value: float) -> None:
+        """Send a position in [0, 1]: 0=open, 1=closed."""
+        raw = int(round(max(0.0, min(1.0, value)) * 255))
+        self._cmd(f"SET POS {raw}")
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -111,7 +217,7 @@ class URRobot:
       - send_gripper(value: float)
     """
 
-    def __init__(self, ip: str):
+    def __init__(self, ip: str, gripper_port: int = 63352):
         try:
             import rtde_control
             import rtde_receive
@@ -122,10 +228,7 @@ class URRobot:
 
         self.ctrl = rtde_control.RTDEControlInterface(ip)
         self.recv = rtde_receive.RTDEReceiveInterface(ip)
-        # === HARDWARE_TODO: gripper SDK (Robotiq, Schunk, vacuum, etc.)
-        # Example for Robotiq via socket: implement a simple class with
-        #   .read_position() -> [0,1] and .write_position(value)
-        self.gripper = None  # plug your gripper driver here
+        self.gripper = RobotiqGripper(ip, port=gripper_port)
 
     def get_joints(self) -> np.ndarray:
         return np.array(self.recv.getActualQ(), dtype=np.float32)
@@ -147,8 +250,12 @@ class URRobot:
         self.gripper.write_position(value)
 
     def close(self) -> None:
-        self.ctrl.servoStop()
-        self.ctrl.stopScript()
+        try:
+            self.ctrl.servoStop()
+            self.ctrl.stopScript()
+        finally:
+            if self.gripper is not None:
+                self.gripper.close()
 
 
 def build_observation(
@@ -181,8 +288,8 @@ def main() -> int:
     policy = load_policy_with_lora(args.policy_path, args.device)
     pre, post = load_processors(args.policy_path)
 
-    cams = Cameras()
-    robot = None if args.dry_run else URRobot(args.robot_ip)
+    cams = Cameras(args.cam_global_serial, args.cam_wrist_serial)
+    robot = None if args.dry_run else URRobot(args.robot_ip, gripper_port=args.gripper_port)
 
     # Reset internal action queue so the chunked policy starts fresh.
     underlying = policy.base_model if hasattr(policy, "base_model") else policy
