@@ -1,0 +1,11 @@
+# Pin Python >= 3.10
+# Core: lerobot with pi0 extras pulls in torch, transformers, einops, etc.
+lerobot[pi0,dataset] @ git+https://github.com/huggingface/lerobot.git@main
+
+# Eval / utilities
+numpy
+pandas
+matplotlib
+tqdm
+pyarrow
+imageio[ffmpeg]

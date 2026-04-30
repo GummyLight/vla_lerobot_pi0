@@ -1,0 +1,24 @@
+name: vla-pi0
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - git
+  # PyTorch (CUDA 12.1 build). Change pytorch-cuda to match your driver,
+  # or drop these three lines and let pip pull a CPU torch.
+  - pytorch=2.4.*
+  - torchvision
+  - pytorch-cuda=12.1
+  # Numerics / IO via conda for stable binaries
+  - numpy
+  - pandas
+  - pyarrow
+  - matplotlib
+  - tqdm
+  - pip:
+      - "lerobot[pi0,dataset] @ git+https://github.com/huggingface/lerobot.git@main"
+      - "imageio[ffmpeg]"

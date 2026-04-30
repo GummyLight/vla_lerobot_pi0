@@ -1,0 +1,89 @@
+# ============================================================================
+# Heavy / generated / machine-specific — never track in git
+# ============================================================================
+
+# Trained model checkpoints, eval plots, anything regenerable
+# (keep folder structure via .gitkeep / README.md, ignore everything else)
+outputs/**
+!outputs/
+!outputs/**/.gitkeep
+!outputs/**/README.md
+!outputs/*/
+wandb/
+
+# Model weight files (LoRA adapters, full checkpoints, etc)
+*.ckpt
+*.safetensors
+*.pt
+*.bin
+
+# HuggingFace cache (pi0 base weights, downloaded models, ~14GB)
+.hf_cache/
+**/hf_cache/
+
+# Datasets: keep folder structure visible (.gitkeep) but skip the heavy bits.
+# data/ has parquet shards (hundreds of MB), videos/ has mp4 shards (GB)
+datasets/*/data/**
+datasets/*/videos/**
+datasets/*/_staging/
+!datasets/*/data/.gitkeep
+!datasets/*/videos/.gitkeep
+# meta/ has some derived files; skip the regenerable ones, keep info.json
+datasets/*/meta/episodes/
+datasets/*/meta/tasks.parquet
+datasets/*/meta/stats.json
+# (info.json is small + describes feature schema — keep it)
+!datasets/*/meta/info.json
+# Let .gitkeep markers leak through ignored dirs to preserve folder layout
+!**/.gitkeep
+!**/README.md
+
+# ============================================================================
+# Python / build artefacts
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+build/
+dist/
+
+# ============================================================================
+# Virtual envs (you use conda externally — these guard against accidents)
+# ============================================================================
+.venv/
+venv/
+env/
+
+# ============================================================================
+# Secrets — NEVER commit
+# ============================================================================
+.env
+.envrc
+*.token
+*.key
+*credentials*
+**/HF_TOKEN
+**/.hf_token
+
+# ============================================================================
+# Editor / OS / Claude Code internals
+# ============================================================================
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ============================================================================
+# Log / temp files
+# ============================================================================
+*.log
+*.tmp
