@@ -12,18 +12,25 @@ VLA training/
 ├── datasets/                          # LeRobot v3.0 datasets (input)
 │   ├── open_3d_printer_diversified/   # train
 │   └── open_3d_printer_test/          # held-out for eval
+├── collect/                           # Data-collection toolkit (UR7e + Robotiq / Pika)
+│   ├── collect_urscript.py            # Mode 1 — URScript playback collector
+│   ├── collect_pika.py                # Mode 2 — Pika teleop collector
+│   ├── preview_cameras.py             # quick D435i framing preview
+│   └── README.md                      # full collection guide (see Step 0 below)
 ├── scripts/
 │   ├── train_pi0.sh                   # one-line wrapper to launch training
 │   ├── train_pi0.py                   # python entrypoint, --method=full|lora|frozen
 │   ├── eval_pi0.py                    # offline eval on a held-out lerobot dataset
 │   ├── run_pi0_robot.py               # closed-loop inference on a real UR + Robotiq + 2× RealSense
+│   ├── preflight_check.py             # 5s hardware sanity check before run_pi0_robot
 │   ├── compare_methods.py             # eval all trained methods + write csv
 │   └── compute_stats.py               # compute meta/stats.json if missing
 ├── configs/
-│   └── pi0_3d_printer.json            # pi0 + dataset feature mapping
+│   ├── pi0_3d_printer.json            # pi0 + dataset feature mapping
+│   └── run_pi0_robot.yaml             # real-robot inference config (used by §5)
 ├── outputs/                           # checkpoints, logs (gitignored)
 ├── environment.yml                    # conda env (preferred)
-└── requirements.txt                   # pip alternative
+└── requirements.txt                   # pip alternative — covers collect/ too
 ```
 
 ## Dataset format check
@@ -64,6 +71,35 @@ Notes:
 
 You'll want a GPU for actual training (pi0 is ~3B params; LoRA and full
 fine-tune are both supported via lerobot CLI flags).
+
+## 0. Data collection (optional — only if you're recording your own data)
+
+Already have `datasets/open_3d_printer_*/`? Skip to §1.
+
+To record fresh demonstrations on a UR7e rig (Robotiq URCap or Pika teleop +
+1–2× RealSense D435i), use the toolkit under [collect/](collect/):
+
+```bash
+# URScript playback — replays a .script with per-episode joint jitter
+python collect/collect_urscript.py \
+    --config collect/configs/urscript_config.yaml \
+    --dataset_name my_dataset \
+    --task "open the 3D printer" \
+    --urscript_file "collect/urscripts/open the 3D printer.script" \
+    --joint_jitter 0.01
+
+# Pika teleoperation
+python collect/collect_pika.py \
+    --config collect/configs/pika_config.yaml \
+    --dataset_name my_pika_demo \
+    --task "pour liquid into cup"
+```
+
+Output goes to `datasets/<dataset_name>/` in **LeRobot v3.0** format and is
+loadable directly by the training scripts in §2. Hardware setup, camera /
+serial discovery, network & URCap prep, jitter strategy, and Windows-specific
+troubleshooting all live in [collect/README.md](collect/README.md)
+(中文版 [collect/README_CN.md](collect/README_CN.md)).
 
 ## 1. Dataset format
 
@@ -259,9 +295,7 @@ python scripts/eval_pi0.py \
 Reports per-dim MAE/MSE on `action`, plus a few qualitative rollouts saved as
 side-by-side GT vs. predicted action plots in `outputs/eval/`.
 
-For closed-loop evaluation on a real robot you'll need to plug the policy into
-your robot stack — see the `eval_pi0.py` `run_episode` function for the inference
-loop you can adapt.
+For closed-loop evaluation on a real robot, see §5 below.
 
 ## 4. Compare methods
 
@@ -289,3 +323,95 @@ already exists — pass `--force` to redo), then writes:
 
 Restrict to a subset with `--methods full lora`, or pass `--force` to re-run
 eval after a longer training run.
+
+## 5. Real-robot closed-loop inference
+
+Closed-loop deployment on a UR + Robotiq 2F-85/140 + 2× Intel RealSense rig.
+All hardware parameters live in [configs/run_pi0_robot.yaml](configs/run_pi0_robot.yaml);
+the script ([scripts/run_pi0_robot.py](scripts/run_pi0_robot.py)) reads it by default.
+
+For an end-to-end explanation of how policy outputs become joint targets and
+gripper commands (servoJ via RTDE, Robotiq URCap socket, safety clamp,
+`servoJ time` matching the actual loop period), see
+[docs/control.md](docs/control.md).
+
+### Step 0 — install runtime deps
+
+```bash
+pip install ur_rtde pyrealsense2 pyyaml
+```
+
+### Step 1 — fill in the config
+
+Open [configs/run_pi0_robot.yaml](configs/run_pi0_robot.yaml) and set:
+
+- `robot.ip` — your UR controller's IP (default placeholder triggers the preflight check).
+- `cameras[*].serial` — RealSense serial numbers. Find them with
+  `python -c "import pyrealsense2 as rs; print([d.get_info(rs.camera_info.serial_number) for d in rs.context().devices])"`.
+  The order matters: `cam_global` = static workspace view, `cam_wrist` = end-effector view.
+
+Other knobs (`control.max_seconds`, `control.max_joint_delta_rad`, `robot.servoj.gain`, …)
+have safe defaults; tune later.
+
+### Step 2 — UR pendant prep (do once per power cycle)
+
+- **Remote Control mode** ON (top-right dropdown on the pendant) — RTDE `servoJ`
+  refuses to drive otherwise.
+- A program containing the **Robotiq toolbar** is loaded and **running** on the
+  pendant. This is what opens TCP port 63352 inside the controller; without it
+  the gripper socket connection refuses.
+- Speed slider at **20–30%** for the first run.
+- E-stop within reach. Workspace clear of everything except the 3D printer.
+- Manually jog the arm into a pose close to the dataset's start pose (the
+  policy is sensitive to initial state).
+
+### Step 3 — preflight check (mandatory before live runs)
+
+```bash
+python scripts/preflight_check.py
+```
+
+Verifies, in order: UR TCP reachable → RTDE handshake → Robotiq URCap socket
+responds → both RealSense serials enumerable → one color frame captured from
+each. Exits non-zero on any failure with a hint about what to fix. Takes ~5s.
+
+If you don't have the robot online yet but want to validate cameras only:
+`python scripts/preflight_check.py --skip-robot`.
+
+### Step 4 — dry run (model + camera + timing, no robot motion)
+
+```bash
+python scripts/run_pi0_robot.py --dry-run --max-seconds 5
+```
+
+Prints the predicted joint targets every second. Watch for:
+- `⚠ control loop slow` warnings — if frequent, your GPU/USB can't sustain 30Hz.
+- joint values within ±π rad and gripper in [0, 1]; otherwise the dataset/model
+  preprocessing is mismatched.
+
+### Step 5 — real closed-loop, short rollout first
+
+```bash
+python scripts/run_pi0_robot.py --task "open the 3D printer" --max-seconds 15
+```
+
+`--max-seconds` is a hard cutoff (also configurable as `control.max_seconds`).
+Start short. The script enforces a per-step joint-delta cap
+(`control.max_joint_delta_rad`, default 0.10 rad ≈ 5.7°) and refuses to send
+larger jumps. If the arm holds still or jitters, raise the cap or check
+`MAX_JOINT_DELTA_RAD` warnings in the log.
+
+For the close task:
+```bash
+python scripts/run_pi0_robot.py --task "close the 3D printer" --max-seconds 15
+```
+
+The `--task` string MUST appear verbatim in
+`datasets/open_3d_printer_diversified/meta/tasks.parquet` — the policy was
+conditioned on those exact strings.
+
+### Override anything from CLI
+
+Every config field has a CLI override (`--robot-ip`, `--cam-global-serial`,
+`--device`, `--gripper-port`, `--max-seconds`, `--task`). CLI > config > defaults.
+Use `--config path/to/other.yaml` to swap configs (e.g. one per rig).

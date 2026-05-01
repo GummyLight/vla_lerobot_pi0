@@ -12,18 +12,25 @@ VLA training/
 ├── datasets/                          # LeRobot v3.0 数据集（输入）
 │   ├── open_3d_printer_diversified/   # 训练集
 │   └── open_3d_printer_test/          # 留出做评估
+├── collect/                           # 数据采集工具集（UR7e + Robotiq / Pika）
+│   ├── collect_urscript.py            # 模式 1 — URScript 回放采集
+│   ├── collect_pika.py                # 模式 2 — Pika 遥操作采集
+│   ├── preview_cameras.py             # D435i 取景预览
+│   └── README_CN.md                   # 完整采集指南（见下方 Step 0）
 ├── scripts/
 │   ├── train_pi0.sh                   # 一行启动训练（bash）
 │   ├── train_pi0.py                   # Python 入口，--method=full|lora|frozen
 │   ├── eval_pi0.py                    # 在留出 lerobot 数据集上做离线评估
 │   ├── run_pi0_robot.py               # 真机闭环推理（UR + Robotiq + 双 RealSense）
+│   ├── preflight_check.py             # 真机跑前 5 秒硬件自检
 │   ├── compare_methods.py             # 对所有训过的方法做评估并出 csv 对比表
 │   └── compute_stats.py               # 缺失时计算 meta/stats.json
 ├── configs/
-│   └── pi0_3d_printer.json            # pi0 + 数据集特征映射（参考）
+│   ├── pi0_3d_printer.json            # pi0 + 数据集特征映射（参考）
+│   └── run_pi0_robot.yaml             # 真机推理配置（§5 用）
 ├── outputs/                           # 训练产物（已 gitignore）
 ├── environment.yml                    # conda 环境（推荐）
-└── requirements.txt                   # 备选 pip 安装
+└── requirements.txt                   # 备选 pip 安装 — 已涵盖 collect/ 的依赖
 ```
 
 ## 数据集格式检查
@@ -62,6 +69,34 @@ conda activate vla-pi0
   （这种方式需要自己保证 ffmpeg 在 PATH 上）。
 
 实际训练需要 GPU（pi0 ~3B 参数；lerobot CLI 同时支持 LoRA 和全量微调）。
+
+## 0. 数据采集（可选 —— 只在你要自己录数据时看）
+
+已经有 `datasets/open_3d_printer_*/`？直接跳到 §1。
+
+要在 UR7e 工位上录新的演示数据（Robotiq URCap 或 Pika 遥操作 + 1–2 路 RealSense
+D435i），用 [collect/](collect/) 下面的工具：
+
+```bash
+# URScript 回放 —— 同一份 .script 反复跑，每次加关节扰动
+python collect/collect_urscript.py \
+    --config collect/configs/urscript_config.yaml \
+    --dataset_name my_dataset \
+    --task "open the 3D printer" \
+    --urscript_file "collect/urscripts/open the 3D printer.script" \
+    --joint_jitter 0.01
+
+# Pika 遥操作
+python collect/collect_pika.py \
+    --config collect/configs/pika_config.yaml \
+    --dataset_name my_pika_demo \
+    --task "pour liquid into cup"
+```
+
+输出落到 `datasets/<dataset_name>/`，**直接就是 LeRobot v3.0** 格式，§2 的训练
+脚本可以直接读。硬件准备、相机 / 序列号查找、网络 & URCap 配置、扰动策略、
+Windows 排错全在 [collect/README_CN.md](collect/README_CN.md)
+（English: [collect/README.md](collect/README.md)）。
 
 ## 1. 数据集格式
 
@@ -246,8 +281,7 @@ python scripts/eval_pi0.py \
 输出：每一维 action 的 MAE / MSE 汇总，以及若干 episode 的 GT vs. 预测动作对比图，
 都写到 `outputs/eval/` 下。
 
-如果要在真机上做闭环评估，需要把策略接入你自己的机器人栈 ——
-参考 `eval_pi0.py` 中的 `run_episode` 函数，那就是可以直接搬到机器人控制循环里的推理代码。
+如果要在真机上做闭环推理，见下文 §5。
 
 ## 4. 对比多种方法
 
@@ -275,3 +309,89 @@ python scripts/compare_methods.py
 
 只对部分方法对比：`--methods full lora`；
 正式训练完后用 `--force` 重新评估。
+
+## 5. 真机闭环推理
+
+UR + Robotiq 2F-85/140 + 双 Intel RealSense 的部署流程。所有硬件参数集中在
+[configs/run_pi0_robot.yaml](configs/run_pi0_robot.yaml)；
+[scripts/run_pi0_robot.py](scripts/run_pi0_robot.py) 默认从这里读。
+
+策略输出怎么一路变成关节角和夹爪指令（servoJ + RTDE、Robotiq URCap socket、
+安全闸刀、`servoJ time` 匹配实测周期），完整解释见
+[docs/control_cn.md](docs/control_cn.md)。
+
+### Step 0 — 装运行时依赖
+
+```bash
+pip install ur_rtde pyrealsense2 pyyaml
+```
+
+### Step 1 — 填 config
+
+打开 [configs/run_pi0_robot.yaml](configs/run_pi0_robot.yaml)，至少改：
+
+- `robot.ip` —— UR 控制器的 IP（占位值会被 preflight 拦下）。
+- `cameras[*].serial` —— 两个 RealSense 的 serial number。可以这样查：
+  `python -c "import pyrealsense2 as rs; print([d.get_info(rs.camera_info.serial_number) for d in rs.context().devices])"`。
+  顺序很重要：`cam_global` = 全局工位视角，`cam_wrist` = 末端手腕视角。
+
+其他参数（`control.max_seconds`、`control.max_joint_delta_rad`、`robot.servoj.gain` 等）
+都有合理默认值，先别动。
+
+### Step 2 — UR 示教器准备（每次开机做一遍）
+
+- **Remote Control 模式打开**（示教器右上角下拉框）—— 否则 RTDE `servoJ`
+  拒绝接管。
+- 加载并**运行**一个含 **Robotiq 工具栏**的程序。这一步才会让控制柜里
+  的 63352 端口对外开放；不跑程序的话夹爪 socket 连不上。
+- 速度旋钮拨到 **20–30%**（首次必做）。
+- E-stop 在手边，工位除了 3D 打印机之外清空。
+- 手动把机械臂移到接近训练数据起始位姿的地方（策略对初始姿态敏感）。
+
+### Step 3 — preflight 连通性检查（真机跑前必做）
+
+```bash
+python scripts/preflight_check.py
+```
+
+依次验证：UR TCP 通 → RTDE 握手 → Robotiq URCap socket 应答 → 两个
+RealSense serial 都在 → 各取一帧 RGB 成功。任何一步失败都会非零退出
+并打印修复提示。整个过程约 5 秒。
+
+如果机械臂还没上线，只想先验相机：
+`python scripts/preflight_check.py --skip-robot`。
+
+### Step 4 — Dry-run（模型 + 相机 + 时序，不动机械臂）
+
+```bash
+python scripts/run_pi0_robot.py --dry-run --max-seconds 5
+```
+
+每秒打印一次预测的关节目标。重点看：
+- `⚠ control loop slow` 告警 —— 经常出现说明 GPU/USB 撑不住 30Hz。
+- 关节值在 ±π 弧度内、夹爪在 [0, 1] 区间；否则数据/模型预处理对不上。
+
+### Step 5 — 真机闭环，先短跑
+
+```bash
+python scripts/run_pi0_robot.py --task "open the 3D printer" --max-seconds 15
+```
+
+`--max-seconds` 是硬截断（也可以写在 config 的 `control.max_seconds`）。
+脚本里有逐步关节跳变限幅（默认 0.10 rad ≈ 5.7°），跳变超限会拒绝下发、
+保持上一帧目标。如果机械臂卡住或抖，看 `MAX_JOINT_DELTA_RAD` 告警决定
+要不要放宽。
+
+跑 close 任务：
+```bash
+python scripts/run_pi0_robot.py --task "close the 3D printer" --max-seconds 15
+```
+
+`--task` 字符串必须和 `datasets/open_3d_printer_diversified/meta/tasks.parquet`
+里的字符串**一字不差**——策略是按这些原文 condition 训出来的。
+
+### CLI 覆盖任何 config 字段
+
+每个 config 字段都有对应 CLI（`--robot-ip` / `--cam-global-serial` /
+`--device` / `--gripper-port` / `--max-seconds` / `--task`），优先级
+**CLI > config > 默认值**。要切换不同机台用 `--config path/to/other.yaml`。

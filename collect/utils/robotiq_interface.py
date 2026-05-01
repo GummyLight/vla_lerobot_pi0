@@ -95,6 +95,20 @@ class RobotiqGripper:
         """Return normalized position 0.0 (open) … 1.0 (closed)."""
         return self.get_position_raw() / 255.0
 
+    # ------------------------------------------------------------------
+    # Aliases so the same class works for both the data collector
+    # (which calls connect/get_position/disconnect) and the inference
+    # loop in scripts/run_pi0_robot.py (read_position/write_position/close).
+    # ------------------------------------------------------------------
+
+    def read_position(self) -> float:
+        return self.get_position()
+
+    def write_position(self, value: float) -> None:
+        """Send a normalised position in [0, 1]: 0=open, 1=closed."""
+        raw = int(round(max(0.0, min(1.0, float(value))) * 255))
+        self.move(raw)
+
     def disconnect(self):
         if self._sock:
             self._sock.close()

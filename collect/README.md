@@ -1,6 +1,7 @@
 # UR7e LeRobot Data Collection
 
 > 🌏 **中文版**: [README_CN.md](README_CN.md)
+> 📦 Part of the [VLA training](../README.md) project — outputs land in `../datasets/` and feed §2 of the root README directly.
 
 Data collection toolkit for the **UR7e robot arm** that saves demonstrations in
 **LeRobot v3.0 format** ready for VLA fine-tuning (e.g. with
@@ -34,13 +35,15 @@ Two independent collection modes are provided:
 
 ## Installation
 
-We strongly recommend a clean Python 3.10 environment (conda / miniforge / venv —
-any of them will do). The codebase has been tested on Python 3.10 with the
-package versions pinned in `requirements.txt`.
+Collection deps are part of the **single root requirements file**
+([../requirements.txt](../requirements.txt)) — install once at the project
+root and both training and collection work from the same env. Python ≥ 3.10
+recommended.
 
 ### Linux / macOS
 
 ```bash
+# from the project root (the parent of this folder)
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -52,10 +55,15 @@ Open **Anaconda / Miniforge Prompt** (a regular `cmd` or PowerShell will also
 work as long as `conda` is on PATH — Git Bash is fine too):
 
 ```bash
-conda create -n ur7e python=3.10 -y
-conda activate ur7e
+# from the project root
+conda create -n vla-pi0 python=3.10 -y
+conda activate vla-pi0
 pip install -r requirements.txt
 ```
+
+> If you only want collection (no training), you can still install the same
+> file — it is the same env. The conda alternative `environment.yml` at the
+> project root works too.
 
 > **Heads-up on Chinese / non-UTF-8 Windows locales (cp936/GBK)**
 > Python's default `open()` uses the system code page on Windows. The repo's

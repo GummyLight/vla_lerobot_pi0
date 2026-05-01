@@ -1,21 +1,4 @@
-# Core robot communication
-ur-rtde>=1.5.7
-
-# Cameras
-pyrealsense2>=2.54.0
-opencv-python>=4.8.0
-
-# Data storage — LeRobot format
-numpy>=1.24.0
-pandas>=2.0.0
-pyarrow>=14.0.0
-
-# Serial communication (Robotiq + Pika raw serial fallback)
-pyserial>=3.5
-
-# Config
-pyyaml>=6.0
-
-# Optional: Pika SDK
-# Install the wheel/package provided by your Pika vendor:
-#   pip install pika-sdk  (adjust name to match actual package)
+# Data-collection deps are merged into the root requirements file:
+#   ../requirements.txt
+# Install from the project root:
+#   pip install -r requirements.txt

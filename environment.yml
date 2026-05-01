@@ -22,3 +22,9 @@ dependencies:
   - pip:
       - "lerobot[pi0,dataset] @ git+https://github.com/huggingface/lerobot.git@main"
       - "imageio[ffmpeg]"
+      # Real-robot inference + collect/ data-collection deps (kept in sync with requirements.txt)
+      - ur_rtde
+      - pyrealsense2
+      - opencv-python
+      - pyserial
+      - pyyaml

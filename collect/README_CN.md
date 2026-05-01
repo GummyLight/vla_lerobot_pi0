@@ -1,6 +1,7 @@
 # UR7e LeRobot 数据采集
 
 > 🌏 **English**: [README.md](README.md)
+> 📦 隶属于 [VLA training](../README_CN.md) 项目 —— 采集结果落到 `../datasets/`，可直接喂给根 README §2 的训练脚本。
 
 为 **UR7e 机械臂** 提供的数据采集工具集，输出 **LeRobot v3.0 格式**
 的演示数据，可直接用于 VLA 微调（例如配合
@@ -34,12 +35,14 @@
 
 ## 安装
 
-强烈建议使用干净的 Python 3.10 环境（conda / miniforge / venv 均可）。
-代码已在 Python 3.10 + `requirements.txt` 锁定的版本组合下测试通过。
+采集相关依赖已并到**项目根目录的统一 requirements 文件**
+（[../requirements.txt](../requirements.txt)）—— 在项目根装一次，训练和采集
+共用同一个环境。建议 Python ≥ 3.10。
 
 ### Linux / macOS
 
 ```bash
+# 在项目根目录（本目录的上一级）执行
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -51,10 +54,14 @@ pip install -r requirements.txt
 也都能用，前提是 `conda` 在 PATH 上）：
 
 ```bash
-conda create -n ur7e python=3.10 -y
-conda activate ur7e
+# 在项目根目录执行
+conda create -n vla-pi0 python=3.10 -y
+conda activate vla-pi0
 pip install -r requirements.txt
 ```
+
+> 如果你只想做采集（不训练），用同一份 requirements 也没问题 —— 是同一个
+> 环境。也可以用项目根目录里的 conda `environment.yml`。
 
 > **中文 / 非 UTF-8 Windows（cp936/GBK）注意事项**
 > Windows 下 Python 的 `open()` 默认用系统代码页。本仓库的 YAML 配置和
