@@ -1,0 +1,37 @@
+# ============================================================
+#  Mode 1 — URScript + Robotiq 2F-58 + Intel D435i
+#  Edit the values below to match your setup.
+# ============================================================
+
+robot:
+  host: "169.254.175.10"       # UR7e controller IP address
+  frequency: 500.0             # RTDE receive frequency (Hz)
+
+gripper:
+  port: 63352                  # Robotiq URCap socket port (default: 63352)
+  type: "robotiq_2f58"
+
+cameras:
+  # Two-camera setup. Each camera MUST have an explicit `serial` — empty
+  # serials with multiple cameras would race on which physical device gets
+  # assigned to which name and the mapping changes between runs.
+  # Run  python preview_cameras.py --all  to list the connected serials,
+  # then paste them below.
+  - name: cam_global              # static external view of the workspace
+    serial: "420222071502"
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false           # Set true to also capture depth frames
+
+  - name: cam_wrist               # mounted on the end-effector, moves with the arm
+    serial: "405622074939"
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false
+
+collection:
+  fps: 30                      # Recording frame rate (must be <= camera fps)
+  output_dir: "datasets"       # Root folder for saved datasets
+  dataset_name: "auto_con_demo"
