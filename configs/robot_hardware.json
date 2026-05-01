@@ -1,0 +1,49 @@
+{
+  "robot": {
+    "ip": "192.168.1.100",
+    "type": "ur7e",
+    "notes": "UR controller IP address. Set --robot-ip to override."
+  },
+  "gripper": {
+    "type": "robotiq_2f_85",
+    "port": 63352,
+    "threshold": 0.5,
+    "notes": "threshold > 0.5 = closed, < 0.5 = open. Tune per your gripper response."
+  },
+  "cameras": {
+    "cam_global": {
+      "serial": null,
+      "notes": "RealSense D435i/D455 serial. Leave null to auto-detect (first device)."
+    },
+    "cam_wrist": {
+      "serial": null,
+      "notes": "RealSense D435i/D455 serial. Leave null to auto-detect (second device)."
+    }
+  },
+  "safety": {
+    "max_joint_delta_rad": 0.10,
+    "notes": "Max per-step joint jump (radians). If exceeded, holds previous target. ~0.10 rad ≈ 5.7°"
+  },
+  "control": {
+    "hz": 30.0,
+    "lookahead_time": 0.1,
+    "gain": 300,
+    "velocity": 0.5,
+    "acceleration": 0.5,
+    "notes": "All in SI units. Passed to UR's servoJ."
+  },
+  "policy": {
+    "checkpoint_path": "outputs/train/pi0_3d_printer_lora/checkpoints/005000/pretrained_model",
+    "device": "cuda",
+    "notes": "device: 'cuda' or 'cpu'. checkpoint_path can be overridden via --policy-path."
+  },
+  "task": {
+    "default": "open the 3D printer",
+    "notes": "Must match one of the task strings in the training dataset. Override with --task."
+  },
+  "rollout": {
+    "max_seconds": 15.0,
+    "dry_run": false,
+    "notes": "max_seconds: hard cutoff for safety. dry_run: prints actions without sending to robot."
+  }
+}

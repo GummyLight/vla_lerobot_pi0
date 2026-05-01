@@ -1,0 +1,49 @@
+# Real-robot inference config for scripts/run_pi0_robot.py
+# Edit values in place; CLI only exposes --config / --dry-run / --task / --max-seconds.
+
+policy:
+  # Trained pi0+LoRA checkpoint dir (the one that contains adapter_model.safetensors).
+  path: outputs/train/pi0_3d_printer_lora/checkpoints/005000/pretrained_model
+  device: cuda                    # "cuda" or "cpu"; auto-falls-back to CPU if CUDA missing
+
+# Language instruction. MUST match one of the strings the policy was trained on
+# (see datasets/open_3d_printer_diversified/meta/tasks.parquet).
+task: "open the 3D printer"
+
+robot:
+  ip: 169.254.175.10               # UR controller IP (set this!)
+  gripper_port: 63352             # Robotiq URCap socket on the UR controller
+  # ur_rtde servoJ tuning. Do not raise gain past ~600 without tuning.
+  servoj:
+    velocity: 0.5                 # rad/s, controller-internal speed cap
+    acceleration: 0.5             # rad/s^2, controller-internal accel cap
+    lookahead_time: 0.1           # s; bigger = smoother but laggier (0.03-0.2 typical)
+    gain: 300                     # closed-loop stiffness (100-600 typical)
+
+cameras:
+  # Order matters: model expects cam_global + cam_wrist with these exact keys.
+  - name: cam_global              # static external view of the workspace
+    serial: "420222071502"
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false           # Set true to also capture depth frames (model ignores)
+
+  - name: cam_wrist               # mounted on the end-effector, moves with the arm
+    serial: "405622074939"
+    width: 640
+    height: 480
+    fps: 30
+    enable_depth: false
+
+control:
+  hz: 30                          # must equal dataset fps (info.json says 30)
+  max_seconds: 30                 # hard rollout cutoff (safety)
+  max_joint_delta_rad: 0.05       # per-step joint jump limit
+  clamp_mode: clip              # "refuse" = freeze on overshoot (safe default).
+                                  # "clip"   = step max_joint_delta_rad toward target
+                                  #            (low-pass filters noisy policy output;
+                                  #            DIAGNOSTIC ONLY for undertrained models —
+                                  #            arm will move smoothly but task likely fails)
+  gripper_threshold: 0.5          # >this => closed; <=this => open. Binary because
+                                  # the dataset's gripper is essentially open/closed.
