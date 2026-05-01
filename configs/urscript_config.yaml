@@ -4,8 +4,7 @@
 # ============================================================
 
 robot:
-  host: "192.168.1.100"        # UR7e controller IP — set to whatever you read
-                               # off the teach pendant (Settings → Network).
+  host: "169.254.175.10"       # UR7e controller IP address
   frequency: 500.0             # RTDE receive frequency (Hz)
 
 gripper:
@@ -19,14 +18,14 @@ cameras:
   # Run  python preview_cameras.py --all  to list the connected serials,
   # then paste them below.
   - name: cam_global              # static external view of the workspace
-    serial: ""                    # paste the D435i serial here
+    serial: "420222071502"
     width: 640
     height: 480
     fps: 30
     enable_depth: false           # Set true to also capture depth frames
 
   - name: cam_wrist               # mounted on the end-effector, moves with the arm
-    serial: ""                    # paste the D435i serial here
+    serial: "405622074939"
     width: 640
     height: 480
     fps: 30

@@ -3,7 +3,7 @@ Quick D435i preview tool — verify camera framing before running collect_*.py.
 
 Usage:
     python preview_cameras.py                # preview the first camera found
-    python preview_cameras.py --serial <D435i_serial>
+    python preview_cameras.py --serial 405622074939
     python preview_cameras.py --all          # all cameras side by side
     python preview_cameras.py --all --fps 15 # halve the USB bandwidth
 
