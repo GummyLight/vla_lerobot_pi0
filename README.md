@@ -5,6 +5,16 @@ Currently set up for **pi0** on the `open_3d_printer_*` datasets.
 
 > 中文版见 [README_CN.md](README_CN.md)。
 
+> **lerobot alignment.** A new `src/vla_pi0/` package mirrors upstream
+> [`huggingface/lerobot`](https://github.com/huggingface/lerobot)'s
+> `robots/`, `cameras/`, `scripts/` layout. The UR7e + Robotiq + 2× D435i
+> rig is now exposed as a proper `lerobot.robots.robot.Robot` subclass
+> (`UR7eFollower`, registered as `ur7e_follower`), and `record` /
+> `rollout` entrypoints mirror `lerobot-record` / `lerobot-rollout`.
+> See [docs/lerobot_alignment.md](docs/lerobot_alignment.md) for what
+> changed and what intentionally didn't. The legacy `collect/` toolkit
+> and `scripts/run_pi0_robot.py` still work unchanged.
+
 ## Project layout
 
 ```
@@ -12,7 +22,10 @@ VLA training/
 ├── datasets/                          # LeRobot v3.0 datasets (input)
 │   ├── open_3d_printer_diversified/   # train
 │   └── open_3d_printer_test/          # held-out for eval
-├── collect/                           # Data-collection toolkit (UR7e + Robotiq / Pika)
+├── src/vla_pi0/                       # lerobot-aligned package (UR7e+Robotiq+D435i)
+│   ├── robots/ur7e_follower/          # UR7eFollower(lerobot.Robot) + RobotConfig
+│   └── scripts/                       # record.py / rollout.py — mirror lerobot CLI
+├── collect/                           # Legacy data-collection toolkit (still works)
 │   ├── collect_urscript.py            # Mode 1 — URScript playback collector
 │   ├── collect_pika.py                # Mode 2 — Pika teleop collector
 │   ├── preview_cameras.py             # quick D435i framing preview
@@ -21,13 +34,16 @@ VLA training/
 │   ├── train_pi0.sh                   # one-line wrapper to launch training
 │   ├── train_pi0.py                   # python entrypoint, --method=full|lora|frozen
 │   ├── eval_pi0.py                    # offline eval on a held-out lerobot dataset
-│   ├── run_pi0_robot.py               # closed-loop inference on a real UR + Robotiq + 2× RealSense
+│   ├── run_pi0_robot.py               # legacy closed-loop inference (kept for back-compat)
 │   ├── preflight_check.py             # 5s hardware sanity check before run_pi0_robot
 │   ├── compare_methods.py             # eval all trained methods + write csv
 │   └── compute_stats.py               # compute meta/stats.json if missing
 ├── configs/
 │   ├── pi0_3d_printer.json            # pi0 + dataset feature mapping
 │   └── run_pi0_robot.yaml             # real-robot inference config (used by §5)
+├── docs/
+│   ├── control.md                     # control-loop internals (servoJ, RTDE, gripper)
+│   └── lerobot_alignment.md           # what this repo borrows from / differs from lerobot
 ├── outputs/                           # checkpoints, logs (gitignored)
 ├── environment.yml                    # conda env (preferred)
 └── requirements.txt                   # pip alternative — covers collect/ too

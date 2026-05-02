@@ -5,6 +5,16 @@
 
 > 英文版见 [README.md](README.md)。
 
+> **向 lerobot 框架对齐**：新增 `src/vla_pi0/` 包，目录布局对齐上游
+> [`huggingface/lerobot`](https://github.com/huggingface/lerobot)
+> 的 `robots/`、`cameras/`、`scripts/`。UR7e + Robotiq + 双 D435i 整套
+> 硬件现在是一个标准的 `lerobot.robots.robot.Robot` 子类
+> （`UR7eFollower`，注册名 `ur7e_follower`），新增的 `record` / `rollout`
+> 入口与上游 `lerobot-record` / `lerobot-rollout` 一一对应。具体改动和
+> 没有改的部分见 [docs/lerobot_alignment_cn.md](docs/lerobot_alignment_cn.md)。
+> 旧的 `collect/` 工具集和 `scripts/run_pi0_robot.py` 完全保留，原有用法
+> 不变。
+
 ## 项目结构
 
 ```
@@ -12,7 +22,10 @@ VLA training/
 ├── datasets/                          # LeRobot v3.0 数据集（输入）
 │   ├── open_3d_printer_diversified/   # 训练集
 │   └── open_3d_printer_test/          # 留出做评估
-├── collect/                           # 数据采集工具集（UR7e + Robotiq / Pika）
+├── src/vla_pi0/                       # 对齐 lerobot 的硬件层包（UR7e+Robotiq+D435i）
+│   ├── robots/ur7e_follower/          # UR7eFollower(lerobot.Robot) + RobotConfig
+│   └── scripts/                       # record.py / rollout.py — 对应 lerobot CLI
+├── collect/                           # 旧版数据采集工具集（仍可用）
 │   ├── collect_urscript.py            # 模式 1 — URScript 回放采集
 │   ├── collect_pika.py                # 模式 2 — Pika 遥操作采集
 │   ├── preview_cameras.py             # D435i 取景预览
@@ -21,13 +34,16 @@ VLA training/
 │   ├── train_pi0.sh                   # 一行启动训练（bash）
 │   ├── train_pi0.py                   # Python 入口，--method=full|lora|frozen
 │   ├── eval_pi0.py                    # 在留出 lerobot 数据集上做离线评估
-│   ├── run_pi0_robot.py               # 真机闭环推理（UR + Robotiq + 双 RealSense）
+│   ├── run_pi0_robot.py               # 旧版真机闭环推理（保留向后兼容）
 │   ├── preflight_check.py             # 真机跑前 5 秒硬件自检
 │   ├── compare_methods.py             # 对所有训过的方法做评估并出 csv 对比表
 │   └── compute_stats.py               # 缺失时计算 meta/stats.json
 ├── configs/
 │   ├── pi0_3d_printer.json            # pi0 + 数据集特征映射（参考）
 │   └── run_pi0_robot.yaml             # 真机推理配置（§5 用）
+├── docs/
+│   ├── control_cn.md                  # 控制循环内部细节（servoJ、RTDE、夹爪）
+│   └── lerobot_alignment_cn.md        # 本仓库与 lerobot 的对齐与差异
 ├── outputs/                           # 训练产物（已 gitignore）
 ├── environment.yml                    # conda 环境（推荐）
 └── requirements.txt                   # 备选 pip 安装 — 已涵盖 collect/ 的依赖
