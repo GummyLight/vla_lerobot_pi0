@@ -158,6 +158,14 @@ def main():
         workspace_bounds=safety_cfg.get("workspace") or {},
         joint_limits=safety_cfg.get("joint_limits"),
         max_tilt_from_down_rad=max_tilt_rad,
+        ik_mode=teleop_cfg.get("ik_mode", "ur_native_servol"),
+        base_bias_min_radius_m=float(
+            teleop_cfg.get("base_bias_min_radius_m", 0.05)),
+        servo_lookahead_s=float(teleop_cfg.get("servo_lookahead_s", 0.2)),
+        servo_gain=float(teleop_cfg.get("servo_gain", 100.0)),
+        max_lin_vel_m_s=float(teleop_cfg.get("max_lin_vel_m_s", 0.30)),
+        max_ang_vel_rad_s=float(teleop_cfg.get("max_ang_vel_rad_s", 1.50)),
+        max_joint_vel_rad_s=float(teleop_cfg.get("max_joint_vel_rad_s", 1.50)),
     )
 
     robot.connect(use_control=True)

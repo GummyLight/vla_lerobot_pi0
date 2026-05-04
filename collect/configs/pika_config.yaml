@@ -51,13 +51,37 @@ teleoperation:
   # Overridden by env var $PIKA_SCALE.
   position_scale: 1.0
 
-  # Soft workspace limit — drop servoL targets whose distance from the
-  # arm's "zero" pose exceeds this many metres. Set 99.0 to disable.
-  # Overridden by env var $PIKA_MAX_DELTA_M.
-  max_delta_m: 1.0
+  # Soft workspace fence — hold pose if the target drifts more than
+  # this many metres from the trigger-on "zero" pose. Originally meant
+  # as a runaway guard before TCP velocity clamping existed. Now that
+  # max_lin_vel_m_s caps per-tick motion, this fence is mostly just an
+  # annoyance — for tasks like "grab and rotate to the back" the TCP
+  # routinely travels 1-2 m and you get locked out mid-motion.
+  # Set to 99.0 (effectively disabled) by default. Override via
+  # $PIKA_MAX_DELTA_M if you want a real cap.
+  max_delta_m: 99.0
 
   # Servo command rate. 50 Hz matches pika_remote_ur's reference teleop loop.
   servo_hz: 50
+
+  # IK strategy:
+  #   ur_native_servol   — let UR's controller do IK internally (servoL).
+  #                        Smooth, but for circular motions UR often picks
+  #                        a "wrist gymnastics" branch instead of rotating
+  #                        the base, which can hit wrist joint limits.
+  #   base_biased_servoj — every frame, bias the IK seed so q[0] (base)
+  #                        points toward the target XY direction
+  #                        (atan2(y, x)), solve IK ourselves, and dispatch
+  #                        via servoJ. Big wins on circular / wide-arc
+  #                        teleop because the BASE does the heavy lifting,
+  #                        not the wrist. Use this unless you have a
+  #                        specific reason not to.
+  ik_mode: base_biased_servoj
+
+  # Don't bias the base when the TCP is closer than this many metres to
+  # the base axis (atan2 becomes ill-conditioned, and you'd see the base
+  # spinning for tiny lateral motion). 5 cm is a safe default.
+  base_bias_min_radius_m: 0.05
 
   # Rigid offset between the pika frame (tracker output) and the arm's tool
   # frame. Run collect/calibrate_pika_to_arm.py once on a new rig to refit.
@@ -76,8 +100,33 @@ teleoperation:
   #    spiky, lower alpha. If teleop feels mushy, raise it.
   #  - Override at runtime with $PIKA_SMOOTHING_ALPHA / $PIKA_GRIPPER_SMOOTHING_ALPHA.
   smoothing:
-    pose_alpha: 0.5        # tracker XYZ + RPY (arm motion smoothing)
-    gripper_alpha: 0.5     # Sense encoder (gripper command smoothing)
+    # Position uses linear EMA on R³; rotation uses spherical slerp on
+    # quaternions (S³). Both consume the same alpha. 0.3 is a good default
+    # for Vive→UR — eliminates lighthouse jitter without making teleop
+    # feel sluggish (~30-60ms effective lag).
+    pose_alpha: 0.3
+    gripper_alpha: 0.5
+
+  # Per-tick velocity caps applied BEFORE servoJ/servoL dispatch. These
+  # are the primary tool for keeping the recorded action curve smooth
+  # (which is what pi0 actually trains on — jittery target_q in the
+  # dataset → jittery learned policy at deployment).
+  #
+  # Caps act on the COMMAND, not on a raw operator velocity, so a quick
+  # hand flick gets smoothly tracked over several ticks instead of
+  # producing one big delta the controller silently clips.
+  max_lin_vel_m_s:    0.30   # 30 cm/s linear TCP cap
+  max_ang_vel_rad_s:  1.50   # ~85°/s rotation cap
+  max_joint_vel_rad_s: 1.50  # last-line clamp on per-tick |dq|
+
+  # servoJ / servoL controller knobs. Default UR factory is gain=300,
+  # lookahead=0.10 — that's "hard tracking" and amplifies every bit of
+  # noise. The tuned defaults below soften the loop ~3× — operators
+  # describe it as "feels alive but not jittery". The cost is ~50ms
+  # extra tracking lag, which is invisible vs the lighthouse latency
+  # we already eat.
+  servo_lookahead_s: 0.20
+  servo_gain:        100.0
 
   # ----------------------------------------------------------------
   # Safety filtering — pre-flight check on every servoL target.
@@ -97,10 +146,21 @@ teleoperation:
   safety:
     # TCP world-frame bounding box. Targets are CLAMPED into this box
     # (soft constraint, never rejected). null on either side = no limit.
+    #
+    # IMPORTANT: UR's base frame puts z=0 at the BASE MOUNTING SURFACE
+    # (top of pedestal / table where the arm is bolted), with +z pointing
+    # up. If your UR is bolted to a tabletop and you want to reach
+    # objects ON that tabletop, z near 0 is exactly where you need the
+    # TCP to go — DO NOT put a positive lower bound on z, or the arm
+    # will refuse to descend to the table.
+    #
+    # Defaults: all None (filter disabled). Tighten only if you have a
+    # specific physical hazard you need to keep the arm out of (e.g.
+    # walls, machinery, the operator's chair).
     workspace:
-      x: [-0.9, 0.9]
-      y: [-0.9, 0.9]
-      z: [0.05, 1.10]    # don't allow servoL targets below table or above safe height
+      x: null
+      y: null
+      z: null
 
     # Per-joint software limits (in radians). Targets whose UR-IK
     # solution falls outside any of these are REJECTED (no servoL).

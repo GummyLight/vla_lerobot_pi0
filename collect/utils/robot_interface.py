@@ -242,6 +242,49 @@ class UR7eInterface:
         """Streaming servo command for smooth teleoperation (call at >=100 Hz)."""
         self._rtde_c.servoL(pose, speed, acc, dt, lookahead, gain)
 
+    def servo_j(
+        self,
+        q: List[float],
+        speed: float = 0.5,
+        acc: float = 0.5,
+        dt: float = 0.002,
+        lookahead: float = 0.1,
+        gain: float = 300,
+    ):
+        """Streaming joint-space servo (use when you've already chosen the
+        IK branch — e.g. base-biased teleop)."""
+        self._rtde_c.servoJ(q, speed, acc, dt, lookahead, gain)
+
+    def get_inverse_kinematics(
+        self, pose_rotvec: List[float], q_near: Optional[List[float]] = None,
+        max_pos_err: float = 1e-3, max_ori_err: float = 1e-3,
+    ) -> Optional[List[float]]:
+        """Resolve the closest IK solution to ``q_near`` (or current Q if
+        omitted). Returns None if UR's solver cannot reach the pose.
+
+        IMPORTANT: ur_rtde's default tolerances are 1e-10 — that's below
+        floating-point precision for pose math, so the Newton-Raphson
+        solver almost always fails to converge with the defaults and
+        silently returns a non-solution. We pass engineering-grade
+        tolerances (1e-3 m / 1e-3 rad ≈ 1mm / 0.06°) so the solver
+        actually returns a usable joint configuration. UR's own internal
+        servoL uses similar tolerances under the hood, so there's no
+        precision loss vs. the native path.
+        """
+        if self._rtde_c is None:
+            return None
+        if q_near is None:
+            q_near = self._rtde_r.getActualQ()
+        try:
+            sol = self._rtde_c.getInverseKinematics(
+                pose_rotvec, q_near, max_pos_err, max_ori_err)
+            if sol is None:
+                return None
+            sol = list(sol)
+            return sol if len(sol) == 6 else None
+        except Exception:
+            return None
+
     def servo_stop(self):
         self._rtde_c.servoStop()
 

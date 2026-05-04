@@ -105,6 +105,13 @@ class PikaTeleopController:
         workspace_bounds: Optional[dict] = None,   # {"x":[lo,hi], ...}
         joint_limits: Optional[list] = None,       # 6 entries, each [lo,hi] or None
         max_tilt_from_down_rad: Optional[float] = None,
+        ik_mode: str = "ur_native_servol",
+        base_bias_min_radius_m: float = 0.05,
+        servo_lookahead_s: float = 0.2,
+        servo_gain: float = 100.0,
+        max_lin_vel_m_s: float = 0.30,
+        max_ang_vel_rad_s: float = 1.50,
+        max_joint_vel_rad_s: float = 1.50,
     ):
         self.robot = robot
         self.sense = sense
@@ -120,11 +127,46 @@ class PikaTeleopController:
         # passthrough (no smoothing); alpha=0.2 means each new sample is
         # blended 20% with 80% of the previous filtered value (heavy
         # smoothing). Typical sweet spot for Vive→UR teleop: 0.25–0.4.
+        #
+        # Position uses linear EMA (well-defined on R³). Rotation uses
+        # quaternion slerp (RPY EMA is geometrically wrong — it has
+        # discontinuities at the ±π wrap and explodes near gimbal lock,
+        # producing the "occasional 358° back-flick" jolt operators see
+        # with the naive implementation).
         self.smoothing_alpha = float(np.clip(smoothing_alpha, 0.0, 1.0))
         self.gripper_smoothing_alpha = float(np.clip(gripper_smoothing_alpha,
                                                      0.0, 1.0))
-        self._smoothed_xyzrpy: Optional[np.ndarray] = None
+        self._smoothed_pos: Optional[np.ndarray] = None      # 3D xyz
+        self._smoothed_quat: Optional[np.ndarray] = None     # quat [x,y,z,w]
         self._smoothed_gripper: Optional[float] = None
+
+        # Servo command parameters. Defaults (gain=100, lookahead=0.2)
+        # are softer than the UR factory (gain=300, lookahead=0.1):
+        # the controller eats noise more gracefully, at the cost of
+        # ~50ms tracking lag. Operators report this as "feels alive but
+        # not jittery". Override via constructor / yaml.
+        self.servo_lookahead_s = float(servo_lookahead_s)
+        self.servo_gain = float(servo_gain)
+
+        # Workspace velocity limits applied per-tick BEFORE servo
+        # dispatch. Caps how far the target can move in one cycle, which
+        # is the only way to keep the recorded action curve jerk-bounded
+        # — UR's controller will clip silently and create jolts otherwise.
+        self.max_lin_vel = float(max_lin_vel_m_s)
+        self.max_ang_vel = float(max_ang_vel_rad_s)
+        self.max_joint_vel = float(max_joint_vel_rad_s)
+        self._last_sent_pos: Optional[np.ndarray] = None      # last sent xyz
+        self._last_sent_quat: Optional[np.ndarray] = None     # last sent quat
+        self._last_sent_q: Optional[np.ndarray] = None        # last servoJ q
+
+        # Debug counters — printed once a second when DEBUG_TELEOP=1, so the
+        # operator can see whether servoJ is actually firing or whether
+        # we're silently falling back to servoL.
+        self._dbg_ik_called = 0
+        self._dbg_ik_failed = 0
+        self._dbg_servoj = 0
+        self._dbg_servol_fallback = 0
+        self._dbg_last_print = 0.0
 
         self.tools = MathTools()
 
@@ -156,6 +198,23 @@ class PikaTeleopController:
         self.max_tilt_from_down_rad = max_tilt_from_down_rad
         self._reject_log_t = 0.0
         self._reject_count = 0
+
+        # IK strategy:
+        #   "ur_native_servol"   — send TCP pose to servoL, UR's controller
+        #                          picks IK branch closest to current Q.
+        #                          Smooth, but for circular motions it often
+        #                          chooses "wrist gymnastics" over base
+        #                          rotation, which can hit wrist limits.
+        #   "base_biased_servoj" — every frame: bias the IK seed so q[0]
+        #                          (base) points toward the target XY
+        #                          (atan2(y, x)), solve IK, then servoJ.
+        #                          Makes circular / large-XY motions track
+        #                          via the base, leaving wrist room.
+        self.ik_mode = ik_mode if ik_mode in (
+            "ur_native_servol", "base_biased_servoj") else "ur_native_servol"
+        # Don't bias the base when the TCP is very close to the base axis —
+        # atan2 becomes noisy and you'd spin the base for sub-cm jitter.
+        self.base_bias_min_radius_m = float(base_bias_min_radius_m)
 
         # Worker thread
         self._lock = threading.Lock()
@@ -218,37 +277,48 @@ class PikaTeleopController:
         return self.tools.mat2xyzrpy(T)
 
     def _refresh_tracker_pose(self):
-        """Read the latest tracker pose, EMA-smooth it, then project into the
-        arm frame. Smoothing happens BEFORE the increment computation so the
-        damped signal flows through both servoL and the recorded action.
+        """Read the latest tracker pose, smooth it (quat slerp on rotation,
+        EMA on position), then project into the arm frame. Smoothing
+        happens BEFORE the increment computation so the damped signal
+        flows through both servoJ and the recorded action — pi0 trains
+        on whatever ends up in the parquet, so this is what determines
+        whether the policy learns smooth motion or jittery motion.
         """
         pose = self.sense.get_tracker_pose()
         if pose is None:
             return
         position, rotation = pose
-        # Sense provides quaternion as [x, y, z, w]
-        roll, pitch, yaw = self.tools.quaternion_to_rpy(*rotation)
-        raw = np.array([position[0], position[1], position[2], roll, pitch, yaw],
-                       dtype=float)
+        raw_pos = np.asarray(position, dtype=float)
+        raw_quat = self.tools.quat_normalize(np.asarray(rotation, dtype=float))
 
-        # EMA on the raw tracker pose. We unwrap rotation deltas to the
-        # nearest 2π so the low-pass doesn't get confused near the ±π wrap
-        # of yaw/roll/pitch.
-        if self.smoothing_alpha < 1.0 and self._smoothed_xyzrpy is not None:
-            unwrapped = raw.copy()
-            unwrapped[3:6] = self._smoothed_xyzrpy[3:6] + (
-                ((raw[3:6] - self._smoothed_xyzrpy[3:6] + np.pi) % (2 * np.pi)) - np.pi
-            )
-            self._smoothed_xyzrpy = (
-                self.smoothing_alpha * unwrapped
-                + (1.0 - self.smoothing_alpha) * self._smoothed_xyzrpy
+        # Position: linear EMA — well-defined on R³.
+        if self.smoothing_alpha < 1.0 and self._smoothed_pos is not None:
+            self._smoothed_pos = (
+                self.smoothing_alpha * raw_pos
+                + (1.0 - self.smoothing_alpha) * self._smoothed_pos
             )
         else:
-            self._smoothed_xyzrpy = raw
+            self._smoothed_pos = raw_pos
 
-        sx, sy, sz, sr, sp, syaw = self._smoothed_xyzrpy
+        # Rotation: spherical slerp — continuous across the ±π wrap.
+        if self.smoothing_alpha < 1.0 and self._smoothed_quat is not None:
+            self._smoothed_quat = self.tools.slerp(
+                self._smoothed_quat, raw_quat, self.smoothing_alpha
+            )
+        else:
+            self._smoothed_quat = raw_quat
+
+        # Convert smoothed quat back to RPY for the matrix-form pipeline
+        # downstream (xyzrpy2Mat → adjust_pika_to_arm → mat2xyzrpy → diff).
+        # This is safe — RPY is only used as an intermediate format for
+        # matrix construction, not for interpolation.
+        roll, pitch, yaw = self.tools.quaternion_to_rpy(
+            self._smoothed_quat[0], self._smoothed_quat[1],
+            self._smoothed_quat[2], self._smoothed_quat[3],
+        )
+        sx, sy, sz = self._smoothed_pos
         self._tracker_xyzrpy = list(self._adjust_pika_to_arm(
-            sx, sy, sz, sr, sp, syaw,
+            sx, sy, sz, roll, pitch, yaw,
         ))
 
     def _handle_trigger(self):
@@ -336,6 +406,63 @@ class PikaTeleopController:
                 return None, "IK_failed"
 
         return out, ""
+
+    def _clamp_tcp_velocity(self, target_xyzrpy: list) -> list:
+        """Limit how fast the *commanded* TCP can move per tick.
+
+        The Vive tracker delivers data in unpredictable bursts (event-
+        driven sweeps from the lighthouses); we run servoJ on a fixed
+        50 Hz schedule. When a fresh pose arrives after a few ms of
+        stale-cache reads, the per-tick delta can spike to 5-10× the
+        operator's actual hand speed. UR's controller silently clips
+        the result, but the recorded action curve still has the spike.
+        Pre-clipping HERE produces a clean velocity-bounded action
+        signal that pi0 can learn from.
+
+        Position is clamped in R³; rotation is clamped on S³ via
+        axis-angle step truncation.
+        """
+        target_pos = np.array(target_xyzrpy[:3], dtype=float)
+        target_quat = self.tools.rpy_to_quat(target_xyzrpy[3],
+                                             target_xyzrpy[4],
+                                             target_xyzrpy[5])
+
+        if self._last_sent_pos is not None:
+            d = target_pos - self._last_sent_pos
+            n = float(np.linalg.norm(d))
+            cap = self.max_lin_vel * self.dt
+            if n > cap and n > 1e-9:
+                target_pos = self._last_sent_pos + d * (cap / n)
+
+        if self._last_sent_quat is not None:
+            target_quat = self.tools.axis_angle_step(
+                self._last_sent_quat, target_quat,
+                self.max_ang_vel * self.dt,
+            )
+
+        self._last_sent_pos = target_pos.copy()
+        self._last_sent_quat = target_quat.copy()
+
+        roll, pitch, yaw = self.tools.quaternion_to_rpy(
+            target_quat[0], target_quat[1], target_quat[2], target_quat[3])
+        return [float(target_pos[0]), float(target_pos[1]), float(target_pos[2]),
+                float(roll), float(pitch), float(yaw)]
+
+    def _clamp_joint_velocity(self, q_target: list) -> list:
+        """Limit per-tick joint delta. Last line of defense — even if IK
+        produces a branch flip, this caps the resulting joint motion to
+        something the controller can physically follow without jolting.
+        """
+        q_target = np.asarray(q_target, dtype=float)
+        if self._last_sent_q is None:
+            self._last_sent_q = q_target.copy()
+            return q_target.tolist()
+        cap = self.max_joint_vel * self.dt
+        d = q_target - self._last_sent_q
+        d = np.clip(d, -cap, +cap)
+        clamped = self._last_sent_q + d
+        self._last_sent_q = clamped.copy()
+        return clamped.tolist()
 
     def _calc_pose_increment(self) -> Optional[list]:
         """Compute the next arm TCP target (xyzrpy) from current tracker reading."""
@@ -454,29 +581,101 @@ class PikaTeleopController:
                     target = filtered
 
             if target is not None and self._teleop_active:
+                # 1) TCP-space velocity clamp (R³ + S³).
+                target = self._clamp_tcp_velocity(target)
+
                 rotvec = self.tools.rpy_to_rotvec(target[3], target[4], target[5])
                 pose_cmd = [target[0], target[1], target[2],
                             float(rotvec[0]), float(rotvec[1]), float(rotvec[2])]
-                try:
-                    self.robot.servo_l(
-                        pose=pose_cmd,
-                        speed=0.5,
-                        acc=0.5,
-                        dt=self.dt,
-                        lookahead=0.1,
-                        gain=300,
-                    )
-                    self._servo_fail_streak = 0
-                except Exception as e:
-                    self._servo_fail_streak += 1
-                    if time.time() - last_log > 0.5:
-                        logger.error("servoL failed: %s", e)
-                        last_log = time.time()
-                    if (self._servo_fail_streak >= self._servo_fail_limit
-                            and not self.controller_lost):
-                        self.controller_lost = True
-                        print("\n[Teleop] !!! UR control dropped — "
-                              "RTDE control script no longer running.")
+
+                sent = False
+                if self.ik_mode == "base_biased_servoj":
+                    # 2) Smart IK seed: bias q[0] by the *change in TCP XY
+                    #    direction* relative to current. This is the only
+                    #    base-orientation-agnostic way (we don't know which
+                    #    way UR is bolted in your world), so we compute
+                    #    how much the target_xy direction differs from the
+                    #    current_xy direction and shift q[0] by that delta.
+                    q_current = self.robot.get_state()["joint_positions"].tolist()
+                    cur_tcp = self.robot.get_tcp_pose().tolist()
+                    q_seed = list(q_current)
+                    cur_radius = float(np.hypot(cur_tcp[0], cur_tcp[1]))
+                    tgt_radius = float(np.hypot(target[0], target[1]))
+                    # Don't bias when either point is too close to the
+                    # base axis — atan2 is ill-conditioned there and the
+                    # delta becomes meaningless.
+                    if (cur_radius > self.base_bias_min_radius_m and
+                            tgt_radius > self.base_bias_min_radius_m):
+                        cur_az = float(np.arctan2(cur_tcp[1], cur_tcp[0]))
+                        tgt_az = float(np.arctan2(target[1], target[0]))
+                        # Wrap into (-π, +π] so we always take the short path.
+                        d = (tgt_az - cur_az + np.pi) % (2 * np.pi) - np.pi
+                        q_seed[0] = q_current[0] + d
+                    q_target = self.robot.get_inverse_kinematics(pose_cmd, q_seed)
+                    self._dbg_ik_called += 1
+                    if q_target is None:
+                        self._dbg_ik_failed += 1
+                    if q_target is not None:
+                        # Unwrap each joint to the branch closest to current
+                        # Q so we don't ask servoJ for a 2π flip in one tick.
+                        for i in range(6):
+                            while q_target[i] - q_current[i] > np.pi:
+                                q_target[i] -= 2 * np.pi
+                            while q_target[i] - q_current[i] < -np.pi:
+                                q_target[i] += 2 * np.pi
+                        # 3) Joint-space velocity clamp.
+                        q_target = self._clamp_joint_velocity(q_target)
+                        try:
+                            self.robot.servo_j(
+                                q=q_target,
+                                speed=0.5, acc=0.5, dt=self.dt,
+                                lookahead=self.servo_lookahead_s,
+                                gain=self.servo_gain,
+                            )
+                            sent = True
+                            self._dbg_servoj += 1
+                            self._servo_fail_streak = 0
+                        except Exception as e:
+                            self._servo_fail_streak += 1
+                            if time.time() - last_log > 0.5:
+                                logger.error("servoJ failed: %s", e)
+                                last_log = time.time()
+
+                if not sent:
+                    # Either ur_native mode, or biased IK failed — fall back
+                    # to plain servoL (UR's internal IK).
+                    try:
+                        self.robot.servo_l(
+                            pose=pose_cmd,
+                            speed=0.5, acc=0.5, dt=self.dt,
+                            lookahead=self.servo_lookahead_s,
+                            gain=self.servo_gain,
+                        )
+                        if self.ik_mode == "base_biased_servoj":
+                            self._dbg_servol_fallback += 1
+                        self._servo_fail_streak = 0
+                    except Exception as e:
+                        self._servo_fail_streak += 1
+                        if time.time() - last_log > 0.5:
+                            logger.error("servoL failed: %s", e)
+                            last_log = time.time()
+                        if (self._servo_fail_streak >= self._servo_fail_limit
+                                and not self.controller_lost):
+                            self.controller_lost = True
+                            print("\n[Teleop] !!! UR control dropped — "
+                                  "RTDE control script no longer running.")
+
+            # Debug stats once a second when DEBUG_TELEOP=1.
+            if os.environ.get("DEBUG_TELEOP") == "1":
+                if t0 - self._dbg_last_print > 1.0:
+                    print(f"[dbg] ik_mode={self.ik_mode}  "
+                          f"ik_called={self._dbg_ik_called}  "
+                          f"ik_failed={self._dbg_ik_failed}  "
+                          f"servoJ={self._dbg_servoj}  "
+                          f"servoL_fallback={self._dbg_servol_fallback}  "
+                          f"reject={self._reject_count}",
+                          flush=True)
+                    self._dbg_last_print = t0
 
             elapsed = time.time() - t0
             sleep = self.dt - elapsed
@@ -570,6 +769,14 @@ class PikaCollector:
             workspace_bounds=safety_cfg.get("workspace") or {},
             joint_limits=safety_cfg.get("joint_limits"),
             max_tilt_from_down_rad=max_tilt_rad,
+            ik_mode=teleop_cfg.get("ik_mode", "ur_native_servol"),
+            base_bias_min_radius_m=float(
+                teleop_cfg.get("base_bias_min_radius_m", 0.05)),
+            servo_lookahead_s=float(teleop_cfg.get("servo_lookahead_s", 0.2)),
+            servo_gain=float(teleop_cfg.get("servo_gain", 100.0)),
+            max_lin_vel_m_s=float(teleop_cfg.get("max_lin_vel_m_s", 0.30)),
+            max_ang_vel_rad_s=float(teleop_cfg.get("max_ang_vel_rad_s", 1.50)),
+            max_joint_vel_rad_s=float(teleop_cfg.get("max_joint_vel_rad_s", 1.50)),
         )
 
         # Live preview window (cam_global + cam_wrist). Created in connect()

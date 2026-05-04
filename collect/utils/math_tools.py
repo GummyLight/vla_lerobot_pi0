@@ -123,3 +123,91 @@ class MathTools:
         cosy_cosp = 1 - 2 * (y * y + z * z)
         yaw = math.atan2(siny_cosp, cosy_cosp)
         return (float(roll), float(pitch), float(yaw))
+
+    # ------------------------------------------------------------------
+    # Quaternion utilities (for proper rotational smoothing — RPY EMA
+    # has discontinuities at ±π wrap and near gimbal lock; quat slerp
+    # interpolates on the unit 3-sphere and is continuous everywhere).
+    #
+    # All quaternions are stored as [x, y, z, w] (matches pysurvive /
+    # ROS conventions).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def quat_normalize(q: np.ndarray) -> np.ndarray:
+        n = float(np.linalg.norm(q))
+        if n < 1e-12:
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        return q / n
+
+    def slerp(self, q0, q1, alpha: float) -> np.ndarray:
+        """Spherical linear interpolation, alpha=0 → q0, alpha=1 → q1.
+        Both inputs must be unit quaternions in [x, y, z, w]."""
+        q0 = np.asarray(q0, dtype=float)
+        q1 = np.asarray(q1, dtype=float)
+        # Pick the short path on S^3.
+        dot = float(np.dot(q0, q1))
+        if dot < 0.0:
+            q1 = -q1
+            dot = -dot
+        # Linear blend when nearly aligned (avoids div-by-zero).
+        if dot > 0.9995:
+            out = (1.0 - alpha) * q0 + alpha * q1
+            return self.quat_normalize(out)
+        theta = math.acos(max(-1.0, min(1.0, dot)))
+        sin_theta = math.sin(theta)
+        a = math.sin((1.0 - alpha) * theta) / sin_theta
+        b = math.sin(alpha * theta) / sin_theta
+        return a * q0 + b * q1
+
+    def rpy_to_quat(self, roll: float, pitch: float, yaw: float) -> np.ndarray:
+        """ZYX intrinsic Tait–Bryan → quaternion [x, y, z, w]. Matches
+        the convention used by xyzrpy2Mat / mat2xyzrpy."""
+        cr, sr = math.cos(roll * 0.5),  math.sin(roll * 0.5)
+        cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+        cy, sy = math.cos(yaw * 0.5),   math.sin(yaw * 0.5)
+        # Z (yaw) ⊗ Y (pitch) ⊗ X (roll)
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        w = cr * cp * cy + sr * sp * sy
+        return self.quat_normalize(np.array([x, y, z, w], dtype=float))
+
+    @staticmethod
+    def quat_angle_diff(q0, q1) -> float:
+        """Return the rotation-angle (radians) between two unit quats."""
+        q0 = np.asarray(q0, dtype=float)
+        q1 = np.asarray(q1, dtype=float)
+        dot = abs(float(np.dot(q0, q1)))
+        dot = max(-1.0, min(1.0, dot))
+        return 2.0 * math.acos(dot)
+
+    @staticmethod
+    def axis_angle_step(q_from, q_to, max_angle: float) -> np.ndarray:
+        """Slerp from q_from toward q_to, but cap the step at ``max_angle``
+        radians. Returns a quaternion that is at most ``max_angle`` away
+        from ``q_from``."""
+        q_from = np.asarray(q_from, dtype=float)
+        q_to = np.asarray(q_to, dtype=float)
+        dot = float(np.dot(q_from, q_to))
+        if dot < 0.0:
+            q_to = -q_to
+            dot = -dot
+        dot = max(-1.0, min(1.0, dot))
+        theta = 2.0 * math.acos(dot)
+        if theta <= max_angle or theta < 1e-9:
+            return q_to
+        # Take the slerp at fraction max_angle/theta.
+        t = max_angle / theta
+        # Reuse slerp via a fresh instance (static method context).
+        # Inline slerp to avoid re-creating MathTools().
+        if dot > 0.9995:
+            out = (1.0 - t) * q_from + t * q_to
+        else:
+            half = math.acos(dot)
+            sin_half = math.sin(half)
+            a = math.sin((1.0 - t) * half) / sin_half
+            b = math.sin(t * half) / sin_half
+            out = a * q_from + b * q_to
+        n = float(np.linalg.norm(out))
+        return out / n if n > 1e-12 else q_from
