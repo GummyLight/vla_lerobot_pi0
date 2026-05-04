@@ -16,13 +16,13 @@ tqdm
 pyarrow
 imageio[ffmpeg]
 
-# ---- Real-robot inference (scripts/run_pi0_robot.py) and data collection
+# ---- Real-robot inference (deploy/run_pi0_robot.py) and data collection
 # (collect/collect_urscript.py, collect/collect_pika.py) ----
 ur_rtde            # UR control via RTDE (used by both inference and collection)
 pyrealsense2       # Intel RealSense D435i/D455 capture (both)
 opencv-python      # used by collect/utils/camera_interface.py (UVCCamera)
 pyserial           # Pika serial fallback in collect/utils/pika_interface.py
-pyyaml             # YAML configs (configs/run_pi0_robot.yaml, collect/configs/*.yaml)
+pyyaml             # YAML configs (deploy/configs/run_pi0_robot.yaml, collect/configs/*.yaml)
 
 # Optional: Pika SDK
 # Install the wheel/package provided by your Pika vendor:

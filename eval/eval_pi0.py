@@ -12,7 +12,7 @@ demonstrator's, frame-for-frame. Closed-loop performance can drift from this.
 
 Usage
 -----
-    python scripts/eval_pi0.py \
+    python eval/eval_pi0.py \
         --policy-path outputs/train/pi0_3d_printer_lora/checkpoints/005000/pretrained_model \
         --episodes 90 91 92 93 94 95 96 97 98 99
 """

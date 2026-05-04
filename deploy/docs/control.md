@@ -1,8 +1,8 @@
 # Control Pipeline Guide
 
-> 中文版:[docs/control_cn.md](control_cn.md)
+> 中文版:[deploy/docs/control_cn.md](control_cn.md)
 
-How [scripts/run_pi0_robot.py](../scripts/run_pi0_robot.py) gets from "policy output" to "arm moves + gripper closes" on the real robot. Read this before tuning anything.
+How [deploy/run_pi0_robot.py](../run_pi0_robot.py) gets from "policy output" to "arm moves + gripper closes" on the real robot. Read this before tuning anything.
 
 ## One-glance overview
 
@@ -43,7 +43,7 @@ How [scripts/run_pi0_robot.py](../scripts/run_pi0_robot.py) gets from "policy ou
 
 ## Stage 1 — Policy inference (pi0 + chunk queue)
 
-[scripts/run_pi0_robot.py:404-409](../scripts/run_pi0_robot.py#L404-L409)
+[deploy/run_pi0_robot.py:404-409](../run_pi0_robot.py#L404-L409)
 
 ```python
 with torch.no_grad():
@@ -72,7 +72,7 @@ steps = 24 Hz`. To hit a sustained 30 Hz you'd need async chunk generation
 
 ## Stage 2 — Safety clamp
 
-[scripts/run_pi0_robot.py:412-417](../scripts/run_pi0_robot.py#L412-L417)
+[deploy/run_pi0_robot.py:412-417](../run_pi0_robot.py#L412-L417)
 
 ```python
 if prev_target is not None:
@@ -104,7 +104,7 @@ When to tighten?
 
 ## Stage 3 — Joint control (servoJ + RTDE)
 
-[scripts/run_pi0_robot.py:328-339](../scripts/run_pi0_robot.py#L328-L339)
+[deploy/run_pi0_robot.py:328-339](../run_pi0_robot.py#L328-L339)
 
 ```python
 def send_joint_target(self, q, dt=None):
@@ -141,7 +141,7 @@ runs at 80 ms** but you tell `servoJ time=33ms`, the controller will:
 
 → **Sprint-then-idle jitter**, not smooth servoing.
 
-Our implementation [scripts/run_pi0_robot.py:467](../scripts/run_pi0_robot.py#L467)
+Our implementation [deploy/run_pi0_robot.py:467](../run_pi0_robot.py#L467)
 feeds the previous iteration's actual wall-clock period `prev_loop_dt` to the
 next `servoJ`'s `time`:
 
@@ -165,7 +165,7 @@ Two separate connections, share the UR's RTDE port 30004.
 
 ## Stage 4 — Gripper control (Robotiq URCap socket)
 
-[scripts/run_pi0_robot.py:218-260](../scripts/run_pi0_robot.py#L218-L260)
+[deploy/run_pi0_robot.py:218-260](../run_pi0_robot.py#L218-L260)
 
 The gripper does **NOT** go through RTDE. The Robotiq URCap (the PolyScope
 plugin) opens its own TCP port `63352` inside the UR control box. The
@@ -181,7 +181,7 @@ protocol is dead-simple ASCII:
 | `SET POS 255\n` | Fully closed |
 | `GET POS\n` | Returns current `POS <0..255>\n` |
 
-Our wrapper [scripts/run_pi0_robot.py:238-251](../scripts/run_pi0_robot.py#L238-L251):
+Our wrapper [deploy/run_pi0_robot.py:238-251](../run_pi0_robot.py#L238-L251):
 
 ```python
 def write_position(self, value: float) -> None:
@@ -194,7 +194,7 @@ Policy outputs gripper in `[0, 1]` float; we map to `[0, 255]` and send.
 
 ### Binarization in the main loop
 
-[scripts/run_pi0_robot.py:421](../scripts/run_pi0_robot.py#L421)
+[deploy/run_pi0_robot.py:421](../run_pi0_robot.py#L421)
 
 ```python
 robot.send_gripper(1.0 if target_gripper > args.gripper_threshold else 0.0)
@@ -216,14 +216,14 @@ the program executes; no program → nobody listening on 63352.
 
 Common first-deploy gotcha: gripper powered, URCap installed, but no
 program running on PolyScope → `connection refused`.
-[scripts/preflight_check.py](../scripts/preflight_check.py)'s step 3 catches
+[deploy/preflight_check.py](../preflight_check.py)'s step 3 catches
 exactly this.
 
 ---
 
 ## Full control loop
 
-[scripts/run_pi0_robot.py:382-468](../scripts/run_pi0_robot.py#L382-L468)
+[deploy/run_pi0_robot.py:382-468](../run_pi0_robot.py#L382-L468)
 
 ```python
 period = 1.0 / args.control_hz   # 33.3 ms
@@ -261,7 +261,7 @@ while time.perf_counter() - t0 < max_seconds:
 
 ---
 
-## Tuning cheat-sheet (edit [configs/run_pi0_robot.yaml](../configs/run_pi0_robot.yaml))
+## Tuning cheat-sheet (edit [deploy/configs/run_pi0_robot.yaml](../configs/run_pi0_robot.yaml))
 
 | Symptom | Knob | How |
 |---|---|---|
@@ -272,7 +272,7 @@ while time.perf_counter() - t0 < max_seconds:
 | Gripper too slow | `RobotiqGripper._cmd("SET SPE ...")` | 200 → 255 (in code) |
 | Gripper grip too weak | `RobotiqGripper._cmd("SET FOR ...")` | 100 → 200 |
 | Loop runs slow (<20 Hz) | Profile chunk boundaries / cameras / GPU | dry-run, watch `dt=` |
-| Task completely fails | **Undertrained** | `train_pi0.py --steps=30000 --resume=true` |
+| Task completely fails | **Undertrained** | `train/train_pi0.py --steps=30000 --resume=true` |
 
 ---
 

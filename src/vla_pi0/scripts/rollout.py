@@ -5,7 +5,7 @@ loads a trained pi0/SmolVLA policy and drives a real robot through the
 ``Robot.get_observation() → policy.select_action() → Robot.send_action()``
 contract.
 
-Differences from the legacy `scripts/run_pi0_robot.py`:
+Differences from the legacy `deploy/run_pi0_robot.py`:
 - No bespoke `Cameras` / `URRobot` classes — everything goes through the
   ``UR7eFollower`` lerobot ``Robot`` subclass in `vla_pi0.robots`.
 - Hardware config is a dataclass (``UR7eFollowerConfig``); CLI flags map to
@@ -40,7 +40,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "scripts"))  # so eval_pi0 imports resolve
+sys.path.insert(0, str(REPO_ROOT / "eval"))  # so eval_pi0 imports resolve
 
 # Match the train + legacy eval scripts' HF cache so we hit the cached pi0 base.
 if sys.platform == "win32":

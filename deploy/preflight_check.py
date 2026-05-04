@@ -10,8 +10,8 @@ Exit code 0 on full pass, 1 on any failure. Run this BEFORE any non-dry-run
 launch of run_pi0_robot.py.
 
 Usage:
-    python scripts/preflight_check.py
-    python scripts/preflight_check.py --config configs/run_pi0_robot.yaml
+    python deploy/preflight_check.py
+    python deploy/preflight_check.py --config deploy/configs/run_pi0_robot.yaml
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG = REPO_ROOT / "configs/run_pi0_robot.yaml"
+DEFAULT_CONFIG = REPO_ROOT / "deploy/configs/run_pi0_robot.yaml"
 
 
 def _load_config(path: Path) -> dict:
@@ -170,7 +170,7 @@ def main() -> int:
 
     print()
     if all(results):
-        print("PREFLIGHT PASSED — you can run scripts/run_pi0_robot.py now.")
+        print("PREFLIGHT PASSED — you can run deploy/run_pi0_robot.py now.")
         return 0
     print("PREFLIGHT FAILED — fix the items above before running on the real robot.")
     return 1

@@ -103,7 +103,7 @@ class UR7eFollowerConfig(RobotConfig):
     def to_legacy_dict(self) -> dict[str, Any]:
         """Return a dict compatible with the existing run_pi0_robot.yaml schema.
 
-        Useful while we migrate the legacy `scripts/run_pi0_robot.py` path —
+        Useful while we migrate the legacy `deploy/run_pi0_robot.py` path —
         the new lerobot-style scripts use the dataclass directly.
         """
         return {

@@ -10,7 +10,7 @@ Internally it delegates to the existing collectors in `collect/utils/`:
   - `UR7eInterface`  — RTDE state + control
   - `RobotiqGripper` — TCP socket to the Robotiq URCap server
   - per-camera RealSense pipes (one per ``CameraSpec``)
-so behaviour is identical to the legacy `scripts/run_pi0_robot.py` path
+so behaviour is identical to the legacy `deploy/run_pi0_robot.py` path
 while we migrate the rest of the stack.
 """
 

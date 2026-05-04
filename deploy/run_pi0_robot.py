@@ -12,11 +12,11 @@ loop: capture cameras + joint state -> policy -> send joint target to the arm.
   (cam_global + cam_wrist). Pose drift = severe degradation.
 
 Usage:
-    # All hardware params live in configs/run_pi0_robot.yaml (default config path).
-    python scripts/run_pi0_robot.py                           # closed-loop on real robot
-    python scripts/run_pi0_robot.py --dry-run                 # no actions sent
-    python scripts/run_pi0_robot.py --task "close the 3D printer" --max-seconds 15
-    python scripts/run_pi0_robot.py --config configs/other.yaml
+    # All hardware params live in deploy/configs/run_pi0_robot.yaml (default config path).
+    python deploy/run_pi0_robot.py                            # closed-loop on real robot
+    python deploy/run_pi0_robot.py --dry-run                  # no actions sent
+    python deploy/run_pi0_robot.py --task "close the 3D printer" --max-seconds 15
+    python deploy/run_pi0_robot.py --config deploy/configs/other.yaml
 
 Any CLI flag overrides the matching value in the config file.
 
@@ -47,15 +47,15 @@ else:
     os.environ.setdefault("HF_HOME", str(REPO_ROOT / ".hf_cache"))
 
 
-# Reuse the loader from eval_pi0.py so policy + processor wiring stays identical.
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
+# Reuse the loader from eval/eval_pi0.py so policy + processor wiring stays identical.
+sys.path.insert(0, str(REPO_ROOT / "eval"))
 sys.path.insert(0, str(REPO_ROOT))  # so `collect.utils.*` resolves
 from eval_pi0 import load_policy_with_lora, load_processors  # noqa: E402
 from collect.utils.robotiq_interface import RobotiqGripper  # noqa: E402
 
 
 # Defaults used when neither config nor CLI overrides a value.
-DEFAULT_CONFIG_PATH = REPO_ROOT / "configs/run_pi0_robot.yaml"
+DEFAULT_CONFIG_PATH = REPO_ROOT / "deploy/configs/run_pi0_robot.yaml"
 DEFAULT_CONTROL_HZ = 30.0
 DEFAULT_MAX_JOINT_DELTA_RAD = 0.10
 DEFAULT_GRIPPER_THRESHOLD = 0.5

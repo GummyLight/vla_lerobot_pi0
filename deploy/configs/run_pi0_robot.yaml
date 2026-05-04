@@ -1,4 +1,4 @@
-# Real-robot inference config for scripts/run_pi0_robot.py
+# Real-robot inference config for deploy/run_pi0_robot.py
 # Edit values in place; CLI only exposes --config / --dry-run / --task / --max-seconds.
 
 policy:

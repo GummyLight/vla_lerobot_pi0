@@ -10,21 +10,21 @@ Three training paradigms are supported via --method:
            full and lora.
 
 Each method writes to its own output_dir so you can train all three and then
-compare with scripts/compare_methods.py.
+compare with eval/compare_methods.py.
 
 Examples
 --------
     # Default: full fine-tune
-    python scripts/train_pi0.py
+    python train/train_pi0.py
 
     # LoRA
-    python scripts/train_pi0.py --method=lora
+    python train/train_pi0.py --method=lora
 
     # Frozen vision tower
-    python scripts/train_pi0.py --method=frozen
+    python train/train_pi0.py --method=frozen
 
     # Forward extra args straight to lerobot's train CLI
-    python scripts/train_pi0.py --method=lora --steps=10000 --batch_size=4 --wandb.enable=true
+    python train/train_pi0.py --method=lora --steps=10000 --batch_size=4 --wandb.enable=true
 """
 
 from __future__ import annotations

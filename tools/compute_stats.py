@@ -7,7 +7,7 @@ features (`observation.state`, `action`) and per-channel image stats from
 a few sampled frames per episode.
 
 Usage:
-    python scripts/compute_stats.py datasets/open_3d_printer_diversified
+    python tools/compute_stats.py datasets/open_3d_printer_diversified
 """
 
 from __future__ import annotations

@@ -6,8 +6,8 @@ per-episode stats, bump codebase_version), then invokes lerobot's v2.1 → v3.0
 converter as a subprocess.
 
 Usage:
-    python scripts/convert_dataset_to_v30.py datasets/open_3d_printer_diversified
-    python scripts/convert_dataset_to_v30.py datasets/open_3d_printer_test
+    python tools/convert_dataset_to_v30.py datasets/open_3d_printer_diversified
+    python tools/convert_dataset_to_v30.py datasets/open_3d_printer_test
 
 Idempotent: skips a step if the dataset is already at that version.
 """

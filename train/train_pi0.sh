@@ -2,9 +2,9 @@
 # Launch pi0 fine-tuning. First arg can be a method (full|lora|frozen);
 # all remaining args are forwarded to lerobot's train CLI.
 #
-#   bash scripts/train_pi0.sh                 # full SFT (default)
-#   bash scripts/train_pi0.sh lora            # LoRA
-#   bash scripts/train_pi0.sh frozen --steps=10000
+#   bash train/train_pi0.sh                 # full SFT (default)
+#   bash train/train_pi0.sh lora            # LoRA
+#   bash train/train_pi0.sh frozen --steps=10000
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,5 +18,5 @@ if [[ $# -ge 1 && "$1" =~ ^(full|lora|frozen)$ ]]; then
 fi
 
 export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache}"
-exec python scripts/train_pi0.py --method="$METHOD" "$@"
+exec python train/train_pi0.py --method="$METHOD" "$@"
 # (train_pi0.py shells out to `python -m lerobot.scripts.lerobot_train`.)

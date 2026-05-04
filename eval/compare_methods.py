@@ -7,13 +7,13 @@ outputs/eval/comparison.csv (and printed to stdout).
 
 Usage:
     # Evaluate all methods that have a `last` checkpoint
-    python scripts/compare_methods.py
+    python eval/compare_methods.py
 
     # Force re-run eval even if summary.json already exists
-    python scripts/compare_methods.py --force
+    python eval/compare_methods.py --force
 
     # Restrict to specific methods
-    python scripts/compare_methods.py --methods full lora
+    python eval/compare_methods.py --methods full lora
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def find_checkpoint(method: str) -> Path | None:
 
 
 def run_eval(ckpt: Path, run_name: str, force: bool) -> Path:
-    """Run scripts/eval_pi0.py and return the directory holding summary.json."""
+    """Run eval/eval_pi0.py and return the directory holding summary.json."""
     out_dir = EVAL_ROOT / run_name
     summary = out_dir / "summary.json"
     if summary.exists() and not force:
@@ -48,7 +48,7 @@ def run_eval(ckpt: Path, run_name: str, force: bool) -> Path:
 
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "eval_pi0.py"),
+        str(REPO_ROOT / "eval" / "eval_pi0.py"),
         "--policy-path", str(ckpt),
         "--dataset-root", str(EVAL_DATASET),
     ]

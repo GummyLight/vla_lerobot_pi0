@@ -98,7 +98,7 @@ class RobotiqGripper:
     # ------------------------------------------------------------------
     # Aliases so the same class works for both the data collector
     # (which calls connect/get_position/disconnect) and the inference
-    # loop in scripts/run_pi0_robot.py (read_position/write_position/close).
+    # loop in deploy/run_pi0_robot.py (read_position/write_position/close).
     # ------------------------------------------------------------------
 
     def read_position(self) -> float:

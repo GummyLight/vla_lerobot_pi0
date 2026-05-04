@@ -1,5 +1,5 @@
 {
-  "_comment": "Reference config — actual training args are passed on the CLI by scripts/train_pi0.py. This file documents the intended setup.",
+  "_comment": "Reference config — actual training args are passed on the CLI by train/train_pi0.py. This file documents the intended setup.",
   "policy": {
     "type": "pi0",
     "pretrained_path": "lerobot/pi0",

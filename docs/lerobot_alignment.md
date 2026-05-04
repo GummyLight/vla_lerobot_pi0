@@ -28,7 +28,7 @@ After alignment you can drive the rig the same way the upstream SO-100 / Koch
 demos do:
 
 ```bash
-# Closed-loop policy inference (was: scripts/run_pi0_robot.py)
+# Closed-loop policy inference (legacy: deploy/run_pi0_robot.py)
 python -m vla_pi0.scripts.rollout \
     --policy-path outputs/train/pi0_3d_printer_lora/checkpoints/last/pretrained_model \
     --task "open the 3D printer" \
@@ -45,7 +45,7 @@ python -m vla_pi0.scripts.record \
     --robot.ip 192.168.1.100
 ```
 
-The legacy scripts under `collect/` and `scripts/run_pi0_robot.py` still
+The legacy scripts under `collect/` and `deploy/run_pi0_robot.py` still
 work unchanged — the new package is additive.
 
 ## Side-by-side comparison
@@ -53,22 +53,22 @@ work unchanged — the new package is additive.
 | Concern | Upstream `lerobot` | This project (before) | This project (now) |
 |---|---|---|---|
 | Robot abstraction | `lerobot.robots.robot.Robot` ABC with `connect/disconnect/get_observation/send_action/observation_features/action_features/is_connected/is_calibrated` | none — raw `UR7eInterface`, `RobotiqGripper`, `MultiCamera` mixed into each script | `vla_pi0.robots.ur7e_follower.UR7eFollower(Robot)` with full contract |
-| Robot config | `RobotConfig` (`draccus.ChoiceRegistry`) + `@RobotConfig.register_subclass("name")` | YAML files (`configs/run_pi0_robot.yaml`) parsed ad-hoc | `UR7eFollowerConfig` registered as `ur7e_follower`; legacy YAML still consumed by `to_legacy_dict()` |
-| Camera abstraction | `lerobot.cameras.realsense.RealSenseCamera` (registered as `intelrealsense`) | inline `pyrealsense2` calls in two places (`collect/utils/camera_interface.py` + `scripts/run_pi0_robot.py`) | one place — `UR7eFollower._open_cameras()` |
+| Robot config | `RobotConfig` (`draccus.ChoiceRegistry`) + `@RobotConfig.register_subclass("name")` | YAML files (`deploy/configs/run_pi0_robot.yaml`) parsed ad-hoc | `UR7eFollowerConfig` registered as `ur7e_follower`; legacy YAML still consumed by `to_legacy_dict()` |
+| Camera abstraction | `lerobot.cameras.realsense.RealSenseCamera` (registered as `intelrealsense`) | inline `pyrealsense2` calls in two places (`collect/utils/camera_interface.py` + `deploy/run_pi0_robot.py`) | one place — `UR7eFollower._open_cameras()` |
 | Data recording | `lerobot-record` → `make_robot_from_config(...)` + `LeRobotDataset` writer | `collect/collect_urscript.py` + `collect/collect_pika.py` (own writer) | `vla_pi0.scripts.record` reuses `LeRobotWriter` *via* the `Robot` contract |
-| Real-robot inference | `lerobot-rollout` (with `strategy.type=base|sentry|...`) | `scripts/run_pi0_robot.py` (custom Cameras + URRobot classes) | `vla_pi0.scripts.rollout` (Robot abstraction; strategy-shaped loop) |
-| Training | `lerobot-train` (`TrainPipelineConfig`) | `scripts/train_pi0.py` wrapping `lerobot.scripts.lerobot_train` | unchanged — already aligned |
-| Offline eval | `lerobot-eval` (sim only, gym vector env) | `scripts/eval_pi0.py` (offline open-loop on dataset) | unchanged — covers the case lerobot-eval doesn't (real-data offline) |
+| Real-robot inference | `lerobot-rollout` (with `strategy.type=base|sentry|...`) | `deploy/run_pi0_robot.py` (custom Cameras + URRobot classes) | `vla_pi0.scripts.rollout` (Robot abstraction; strategy-shaped loop) |
+| Training | `lerobot-train` (`TrainPipelineConfig`) | `train/train_pi0.py` wrapping `lerobot.scripts.lerobot_train` | unchanged — already aligned |
+| Offline eval | `lerobot-eval` (sim only, gym vector env) | `eval/eval_pi0.py` (offline open-loop on dataset) | unchanged — covers the case lerobot-eval doesn't (real-data offline) |
 | Dataset format | LeRobot v3.0 (parquet + mp4, multi-episode chunks) | LeRobot v3.0 | unchanged — already aligned |
 | CLI configs | `draccus` (`--policy.type=pi0 --robot.type=so100_follower ...`) | argparse + YAML | argparse with `--robot.<field>` dotted names that match draccus muscle memory |
 
 ## What's intentionally NOT migrated
 
-1. **`scripts/eval_pi0.py`** — lerobot's `lerobot-eval` only runs against
+1. **`eval/eval_pi0.py`** — lerobot's `lerobot-eval` only runs against
    `gym.vector.VectorEnv` simulators. We don't have a sim, and the existing
    eval script does something genuinely different: open-loop frame-by-frame
    action prediction against a held-out lerobot dataset. Keep it.
-2. **`scripts/train_pi0.py`** — already a thin wrapper around
+2. **`train/train_pi0.py`** — already a thin wrapper around
    `lerobot.scripts.lerobot_train`. Replacing it with raw
    `lerobot-train --policy.type=pi0 ...` invocations would lose the
    per-method (`full|lora|frozen`) defaults sweep; the wrapper is the
@@ -95,7 +95,7 @@ work unchanged — the new package is additive.
   `clamp_mode`).
 - Cameras are owned by the `Robot`, so a dry-run with cameras-only is not
   yet supported in `vla_pi0.scripts.rollout` — the legacy
-  `scripts/run_pi0_robot.py --dry-run` path is still the easy way to
+  `deploy/run_pi0_robot.py --dry-run` path is still the easy way to
   smoke-test the model + cameras without RTDE.
 
 ## Adding a different robot

@@ -25,7 +25,7 @@ src/vla_pi0/
 对齐之后，可以用上游 SO-100 / Koch 演示同样的方式驱动整套硬件：
 
 ```bash
-# 闭环策略推理（原来是 scripts/run_pi0_robot.py）
+# 闭环策略推理（legacy: deploy/run_pi0_robot.py）
 python -m vla_pi0.scripts.rollout \
     --policy-path outputs/train/pi0_3d_printer_lora/checkpoints/last/pretrained_model \
     --task "open the 3D printer" \
@@ -42,7 +42,7 @@ python -m vla_pi0.scripts.record \
     --robot.ip 192.168.1.100
 ```
 
-老的 `collect/` 工具包和 `scripts/run_pi0_robot.py` 完全保留 —— 新包是**附加**的，
+老的 `collect/` 工具包和 `deploy/run_pi0_robot.py` 完全保留 —— 新包是**附加**的，
 不替换。
 
 ## 逐项对比
@@ -50,21 +50,21 @@ python -m vla_pi0.scripts.record \
 | 关注点 | 上游 `lerobot` | 本项目（之前） | 本项目（现在） |
 |---|---|---|---|
 | Robot 抽象 | `lerobot.robots.robot.Robot` 抽象类，约定 `connect/disconnect/get_observation/send_action/observation_features/action_features/is_connected/is_calibrated` | 没有抽象 —— `UR7eInterface`、`RobotiqGripper`、`MultiCamera` 直接散在每个脚本里 | `vla_pi0.robots.ur7e_follower.UR7eFollower(Robot)` 完整实现契约 |
-| Robot 配置 | `RobotConfig`（基于 `draccus.ChoiceRegistry`）+ `@RobotConfig.register_subclass("name")` | YAML 文件（`configs/run_pi0_robot.yaml`）每个脚本各自解析 | `UR7eFollowerConfig` 注册为 `ur7e_follower`；旧的 YAML 仍然能通过 `to_legacy_dict()` 兼容 |
-| Camera 抽象 | `lerobot.cameras.realsense.RealSenseCamera`（注册名 `intelrealsense`） | `pyrealsense2` 的调用同时出现在 `collect/utils/camera_interface.py` 和 `scripts/run_pi0_robot.py` 两处 | 集中到 `UR7eFollower._open_cameras()` 一处 |
+| Robot 配置 | `RobotConfig`（基于 `draccus.ChoiceRegistry`）+ `@RobotConfig.register_subclass("name")` | YAML 文件（`deploy/configs/run_pi0_robot.yaml`）每个脚本各自解析 | `UR7eFollowerConfig` 注册为 `ur7e_follower`；旧的 YAML 仍然能通过 `to_legacy_dict()` 兼容 |
+| Camera 抽象 | `lerobot.cameras.realsense.RealSenseCamera`（注册名 `intelrealsense`） | `pyrealsense2` 的调用同时出现在 `collect/utils/camera_interface.py` 和 `deploy/run_pi0_robot.py` 两处 | 集中到 `UR7eFollower._open_cameras()` 一处 |
 | 数据采集 | `lerobot-record` → `make_robot_from_config(...)` + `LeRobotDataset` writer | `collect/collect_urscript.py` + `collect/collect_pika.py`（自带 writer） | `vla_pi0.scripts.record` 通过 `Robot` 契约复用 `LeRobotWriter` |
-| 真机推理 | `lerobot-rollout`（带 `strategy.type=base/sentry/...`） | `scripts/run_pi0_robot.py`（自己写的 Cameras + URRobot 类） | `vla_pi0.scripts.rollout`（走 Robot 抽象；strategy 风格的循环） |
-| 训练 | `lerobot-train`（`TrainPipelineConfig`） | `scripts/train_pi0.py` 包装 `lerobot.scripts.lerobot_train` | 不变 —— 本来就对齐了 |
-| 离线评估 | `lerobot-eval`（仅支持 gym vector env 仿真） | `scripts/eval_pi0.py`（基于真实数据集的开环动作预测） | 不变 —— 这是 `lerobot-eval` 不覆盖的真实数据离线场景 |
+| 真机推理 | `lerobot-rollout`（带 `strategy.type=base/sentry/...`） | `deploy/run_pi0_robot.py`（自己写的 Cameras + URRobot 类） | `vla_pi0.scripts.rollout`（走 Robot 抽象；strategy 风格的循环） |
+| 训练 | `lerobot-train`（`TrainPipelineConfig`） | `train/train_pi0.py` 包装 `lerobot.scripts.lerobot_train` | 不变 —— 本来就对齐了 |
+| 离线评估 | `lerobot-eval`（仅支持 gym vector env 仿真） | `eval/eval_pi0.py`（基于真实数据集的开环动作预测） | 不变 —— 这是 `lerobot-eval` 不覆盖的真实数据离线场景 |
 | 数据集格式 | LeRobot v3.0（parquet + mp4，多 episode 分块） | LeRobot v3.0 | 不变 —— 已对齐 |
 | CLI 配置 | `draccus`（`--policy.type=pi0 --robot.type=so100_follower ...`） | argparse + YAML | argparse 但参数名按 `--robot.<field>` 的点号风格写，肌肉记忆通用 |
 
 ## 为什么有些东西没有迁移
 
-1. **`scripts/eval_pi0.py`** —— lerobot 的 `lerobot-eval` 只跑
+1. **`eval/eval_pi0.py`** —— lerobot 的 `lerobot-eval` 只跑
    `gym.vector.VectorEnv` 仿真。我们没有仿真环境，而当前的 eval 脚本做的是
    完全不同的事：在 held-out lerobot 数据集上做逐帧开环动作预测。保留。
-2. **`scripts/train_pi0.py`** —— 它已经是 `lerobot.scripts.lerobot_train` 的薄
+2. **`train/train_pi0.py`** —— 它已经是 `lerobot.scripts.lerobot_train` 的薄
    包装。直接换成 `lerobot-train --policy.type=pi0 ...` 会丢失 `full|lora|frozen`
    三种模式的预设参数 sweep，包装本身就是价值所在。
 3. **老的 `collect/` 工具包** —— 完全保留，向后兼容。新的
@@ -88,7 +88,7 @@ python -m vla_pi0.scripts.record \
   （`max_joint_delta_rad`、`clamp_mode`）。
 - 摄像头由 `Robot` 拥有，所以「只开摄像头不连机械臂」的 dry-run 在
   `vla_pi0.scripts.rollout` 暂未支持 —— 想脱机验证模型 + 摄像头时仍然走老的
-  `scripts/run_pi0_robot.py --dry-run` 路径最快。
+  `deploy/run_pi0_robot.py --dry-run` 路径最快。
 
 ## 接入新机器人
 

@@ -1,7 +1,7 @@
 """Render bar charts from an eval `summary.json` (per-dim MAE/MSE, per task).
 
 Usage:
-    python scripts/plot_eval_summary.py outputs/eval/pi0_3d_printer_lora_step005000/summary.json
+    python eval/plot_eval_summary.py outputs/eval/pi0_3d_printer_lora_step005000/summary.json
 """
 
 from __future__ import annotations
