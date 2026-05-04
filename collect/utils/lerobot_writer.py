@@ -252,8 +252,17 @@ class LeRobotWriter:
 
     def end_episode(self, discard: bool = False):
         """Save per-episode parquet + per-episode mp4 to staging."""
+        # When the caller is about to discard (Ctrl+C / 'n' answer), tolerate
+        # writer release failures — the staged file is going to be deleted
+        # anyway. Otherwise we'd lose the whole episode just because ffmpeg
+        # choked on a corrupted last frame.
         for w in self._video_writers.values():
-            w.release()
+            try:
+                w.release()
+            except Exception as e:
+                if not discard:
+                    raise
+                print(f"  (writer release failed during discard: {e}; ignored)")
         self._video_writers = {}
 
         if discard or not self._rows:

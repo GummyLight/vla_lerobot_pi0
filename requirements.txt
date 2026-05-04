@@ -19,11 +19,23 @@ imageio[ffmpeg]
 # ---- Real-robot inference (scripts/run_pi0_robot.py) and data collection
 # (collect/collect_urscript.py, collect/collect_pika.py) ----
 ur_rtde            # UR control via RTDE (used by both inference and collection)
-pyrealsense2       # Intel RealSense D435i/D455 capture (both)
+pyrealsense2       # Intel RealSense D435i/D455 capture + Pika wrist D405
 opencv-python      # used by collect/utils/camera_interface.py (UVCCamera)
-pyserial           # Pika serial fallback in collect/utils/pika_interface.py
+pyserial           # Pika Sense + Pika Gripper serial transport (vendored SDK)
 pyyaml             # YAML configs (configs/run_pi0_robot.yaml, collect/configs/*.yaml)
 
-# Optional: Pika SDK
-# Install the wheel/package provided by your Pika vendor:
-#   pip install pika-sdk  (adjust name to match actual package)
+# ---- Pika SDK (vendored under collect/pika_sdk/) ----
+# The Pika SDK source lives in-tree at collect/pika_sdk and is auto-injected
+# into sys.path by collect/collect_pika.py and utils/pika_interface.py — no
+# pip install is required. The Vive-tracker driver (pysurvive) is the only
+# extra dependency for Pika teleop and is system-specific to install:
+#
+#   git clone https://github.com/cntools/libsurvive.git && cd libsurvive
+#   sudo apt install build-essential cmake libusb-1.0-0-dev liblapacke-dev \
+#                    libopenblas-dev zlib1g-dev libatlas-base-dev
+#   make && sudo make install
+#   pip install pysurvive
+#
+# If pysurvive is not installed the Pika SDK still loads — only get_pose()
+# (i.e. tracker-driven teleop) is unavailable; gripper + encoder + recording
+# all keep working.

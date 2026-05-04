@@ -71,6 +71,30 @@ class UR7eInterface:
             "tcp_force": np.array(self._rtde_r.getActualTCPForce(), dtype=np.float32),
         }
 
+    def get_target_q(self) -> np.ndarray:
+        """Return the controller's commanded joint targets (for teleop action labels)."""
+        return np.array(self._rtde_r.getTargetQ(), dtype=np.float32)
+
+    def get_tcp_pose(self) -> np.ndarray:
+        """Return the current actual TCP pose [x, y, z, rx, ry, rz] in metres + rotvec."""
+        return np.array(self._rtde_r.getActualTCPPose(), dtype=np.float32)
+
+    def is_control_alive(self) -> bool:
+        """True iff the RTDEControl script is still running on the controller.
+
+        ur_rtde's C++ watchdog spams ``RTDE control script is not running!`` to
+        stderr when the program drops (Protective Stop, Local mode toggle,
+        E-stop, etc.). servoL no longer raises in that state — it just returns
+        ``False`` after the spam — so polling this flag is the only reliable
+        Python-side detection.
+        """
+        if self._rtde_c is None:
+            return False
+        try:
+            return bool(self._rtde_c.isProgramRunning())
+        except Exception:
+            return False
+
     def is_steady(self, vel_threshold: float = 0.01) -> bool:
         """Return True when all joints are nearly stationary."""
         return float(np.max(np.abs(self._rtde_r.getActualQd()))) < vel_threshold

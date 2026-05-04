@@ -75,9 +75,23 @@ pip install -r requirements.txt
 
 ### Pika SDK (Mode 2 only)
 
-Install the Python package provided by your Pika vendor and update the import
-path at the top of `utils/pika_interface.py` accordingly. If the SDK is not yet
-available, the module falls back to raw serial I/O.
+The Pika SDK is **vendored in-tree** under [`pika_sdk/`](pika_sdk/) — no
+`pip install` is needed. `collect_pika.py` and `utils/pika_interface.py`
+auto-inject this directory into `sys.path` so `from pika.sense import Sense`
+just works.
+
+Required for Pika teleop:
+
+- `pyserial` — already in [`../requirements.txt`](../requirements.txt) (the
+  Pika Sense and Gripper both stream JSON over USB serial).
+- `pysurvive` — needed *only* if you drive the arm from the Vive tracker
+  (`tracker_device: T20` in [`configs/pika_config.yaml`](configs/pika_config.yaml)).
+  Install steps for `libsurvive` + `pysurvive` are in
+  [`../requirements.txt`](../requirements.txt).
+
+If `pysurvive` is missing the rest of the pipeline still loads; the teleop
+loop logs a warning and the arm simply doesn't follow tracker pose (you can
+still record gripper + camera-only datasets, useful for sanity checks).
 
 ### ffmpeg (optional but strongly recommended)
 
@@ -463,6 +477,11 @@ Save this episode? [Y/n/q] y
 
 ## Mode 2 — Pika teleoperation
 
+This mode reproduces the `pika_remote_ur` reference teleop loop end-to-end:
+the **Vive tracker (T20)** mounted on the Pika handle drives the UR7e TCP via
+`servoL`, and the Pika Sense **trigger button** toggles teleop on/off so the
+arm only tracks when you intend it to.
+
 ### Basic usage
 
 ```bash
@@ -472,58 +491,82 @@ python collect_pika.py \
   --task "pour liquid into cup"
 ```
 
-### Skip calibration if Sense is already zeroed
+### Tuning at runtime (env vars override config)
 
 ```bash
-python collect_pika.py --config configs/pika_config.yaml --no_calibrate
+# Halve translation (fine-grained mode); keep rotation 1:1.
+PIKA_SCALE=0.5 python collect_pika.py --config configs/pika_config.yaml ...
+
+# Loosen the soft workspace limit to 1.5 m.
+PIKA_MAX_DELTA_M=1.5 python collect_pika.py ...
+
+# Force a specific serial port (skips auto-detection).
+PIKA_SENSE_PORT=/dev/ttyUSB0 PIKA_GRIPPER_PORT=/dev/ttyUSB1 \
+  python collect_pika.py ...
 ```
 
-### Calibrating Pika Sense
+### Operator flow
 
-At startup the script asks you to hold the Sense controller at the desired
-neutral orientation and then records a baseline. During collection, all
-subsequent motion is measured relative to that baseline.
-
-You can also re-calibrate mid-session:
+1. **Power-on** — UR7e in Remote Control, Pika Sense + Gripper plugged in,
+   Vive base stations powered, T20 tracker reporting in `pysurvive`. The
+   external D435i and the Pika wrist camera should both enumerate.
+2. **Launch** the collector. It auto-detects the two USB serials, snapshots
+   the arm's current TCP pose as the teleop "zero", and waits for the first
+   tracker pose. You'll see `[PikaSense] Connected ...` and `[PikaGripper]
+   Connected ...` lines.
+3. **Engage teleop** — pull the Pika Sense trigger once. The terminal prints
+   `[Teleop] >> ENGAGED`. Move the handle: the arm tracks 1:1 (or scaled by
+   `position_scale`) until you release the trigger again.
+4. **Start recording** — at the menu prompt, press `s` then Enter. The
+   episode records at the dataset fps until you Ctrl+C. State / action /
+   image streams are written every frame regardless of whether teleop is
+   active, so you can pause, reposition, re-engage, and continue without
+   stopping the episode.
+5. **Save / discard** when prompted, then loop back to step 3 for the next
+   episode. `q` at the top-level menu finalises the dataset.
 
 ```
-Options:  [s] Start episode  |  [c] Re-calibrate Sense  |  [q] Quit
->> c
-[PikaSense] Calibrating — hold Sense still...
-[PikaSense] Calibrated.
-```
+[PikaSense] Connected @ /dev/ttyUSB0 (tracker=T20)
+[PikaGripper] Motor enabled.
+[PikaGripper] Connected @ /dev/ttyUSB1 (wrist_cam=realsense)
 
-### Interactive session flow
-
-```
-[PikaGripper] Connected @ /dev/ttyUSB0
-[PikaSense] Connected @ /dev/ttyUSB1
-[PikaSense] Calibrating — hold Sense still...
-[PikaSense] Calibrated.
-
-Options:  [s] Start episode  |  [c] Re-calibrate Sense  |  [q] Quit
+Options:  [s] Start episode  |  [q] Quit
 >> s
 
 Episode 0  |  task: pour liquid into cup
-─────────────────────────────────────────
-Press Enter to START recording (Ctrl+C to stop episode)...
+═════════════════════════════════════════
+  Pull the Pika Sense trigger to ENGAGE teleop, then release when ready.
+  Press Enter here to START recording (Ctrl+C to end the episode).
 
-[Collector] Recording at 30 fps. Teleop ACTIVE. Press Ctrl+C to end.
-
+[Teleop] >> ENGAGED
+[Collector] Recording @ 30 fps. Ctrl+C to stop.
 ^C
-Episode captured: 210 frames (7.0s)
+[Collector] Captured 240 frames (8.0s).
 Save this episode? [Y/n/q] y
-  Episode 0 saved — 210 frames (7.0s)
+  Episode 0 saved — 240 frames (8.0s)
 ```
 
 ### What is recorded
 
-| Field | Description |
-|-------|-------------|
-| `observation.state` | `[j0…j5, gripper]` — joint angles (rad) + gripper (0–1) |
-| `action` | `[j0…j5, gripper_cmd]` — joint positions at t + commanded gripper |
-| `observation.images.cam_external` | Color frame from external D435i |
-| `observation.images.cam_wrist` | Color frame from Pika wrist camera |
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `observation.state` | `(7,)` float32 | `[q0..q5, gripper_rad]` — actual UR joints (rad) + actual gripper motor angle (rad) |
+| `action` | `(7,)` float32 | `[targetQ0..targetQ5, gripper_cmd_rad]` — controller's commanded joint targets + Sense encoder command |
+| `observation.images.cam_global` | H × W × 3 video | External D435i workspace view |
+| `observation.images.cam_wrist` | H × W × 3 video | Pika gripper's onboard RealSense (D405 by default) |
+
+State is what the robot **is** doing; action is what the controller is
+**asking** it to do. For pi0 fine-tuning this is the canonical pair — train
+the policy to predict `action` from `(state, images, task)`.
+
+### Calibrating `pika_to_arm`
+
+The 6-element offset under `teleoperation.pika_to_arm` aligns the tracker's
+attachment frame with the UR7e tool frame. The defaults match the rig used
+by `pika_remote_ur`. If you redesign the handle adapter, recompute it once
+(e.g. by hand-aligning at a known TCP pose, or by running
+`collect/calibrate_pika_to_arm.py` if you port the helper from the upstream
+project) and paste the new `[x, y, z, roll, pitch, yaw]` into the config.
 
 ---
 
@@ -605,16 +648,35 @@ print(dataset[0])  # first frame
 
 ---
 
-## Adapting the Pika SDK
+## Pika SDK layout
 
-Open `utils/pika_interface.py`. All sections that require adaptation are
-marked with `# ADAPT`. Specifically:
+The vendored SDK ships under [`pika_sdk/`](pika_sdk/) (a verbatim copy of
+the upstream `agx-pypika` project):
 
-1. **`PikaGripper.connect()`** — replace the `from pika_sdk import ...` line
-   with your actual SDK import and device init.
-2. **`PikaGripper.move()`** — replace with your SDK's gripper command.
-3. **`PikaSense._read_packet()`** — replace the raw serial stub with your SDK's
-   data fetch, mapping to `delta_pose` (6-DOF delta) and `gripper` (0–1).
+```
+pika_sdk/
+├── pika/                        # importable as top-level `pika`
+│   ├── sense.py                 # tracker pose, trigger, encoder
+│   ├── gripper.py               # motor enable / set_motor_angle / state
+│   ├── serial_comm.py           # JSON-over-USB-serial transport
+│   ├── camera/
+│   │   ├── realsense.py         # D435i / D405 wrapper
+│   │   └── fisheye.py           # wide-angle UVC cameras
+│   └── tracker/
+│       ├── vive_tracker.py      # pysurvive bindings + lighthouse calibration
+│       └── pose_utils.py
+├── examples/                    # upstream demos (read-only reference)
+├── tools/                       # vendor-provided helper scripts
+├── setup.py                     # pip-installable too if you prefer
+└── README.md
+```
+
+`utils/pika_interface.py` is the **thin** project-side wrapper used by
+`collect_pika.py`. It exposes only the methods we actually record from
+(`get_tracker_pose`, `get_encoder_rad`, `get_command_state`, `get_motor_position`,
+`get_wrist_frame`). When you upgrade the SDK in-tree, prefer dropping the new
+`pika/` package over `pika_sdk/pika/` and only patch this thin wrapper if a
+method signature changed.
 
 ---
 

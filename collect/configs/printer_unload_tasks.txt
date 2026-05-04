@@ -1,0 +1,18 @@
+# Pika teleop task list for the "empty the 3D printer" workflow.
+# One task per line; lines starting with `#` are ignored.
+# Pass to collect_pika.py via:
+#     --tasks_file configs/printer_unload_tasks.txt
+#
+# At runtime you'll pick a task by typing its number at the prompt:
+#   [1] full sequence  ← record this most. ~80 episodes recommended.
+#   [2..5] sub-stages  ← ~30 episodes each, builds robustness/recovery.
+#
+# Why one combined dataset and not five: pi0 trains best when all related
+# behaviors share a single dataset + state/action space. The task string
+# (column `tasks` in meta/episodes/*.parquet) is what the model conditions on.
+
+empty the 3D printer: open the door, take out the printed part, place it on the table, then close the door
+open the 3D printer door
+take the printed part out of the 3D printer
+place the printed part on the table
+close the 3D printer door

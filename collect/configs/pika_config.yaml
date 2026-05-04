@@ -1,51 +1,152 @@
 # ============================================================
-#  Mode 2 — Pika Sense + Pika Gripper + D435i + Wrist Camera
+#  Pika teleoperation → UR7e (6 DoF) + Pika gripper (1 DoF)
+#  Resulting dataset: LeRobot v3.0, ready for pi0 fine-tuning.
 #  Edit the values below to match your setup.
 # ============================================================
 
 robot:
-  host: "192.168.1.100"       # UR7e controller IP address
+  host: "169.254.175.10"      # UR7e controller IP (PolyScope X — Realtime port 30003)
   frequency: 500.0
 
-pika_gripper:
-  port: "/dev/ttyUSB0"        # Serial port of Pika gripper  (Windows: "COM3")
-  baudrate: 115200
-
+# ----------------------- Pika Sense (tracker + trigger + encoder)
 pika_sense:
-  port: "/dev/ttyUSB1"        # Serial port of Pika Sense   (Windows: "COM4")
-  baudrate: 115200
+  port: ""                     # Empty → auto-detect from /dev/ttyUSB*.
+                               # Override with $PIKA_SENSE_PORT or set explicitly.
+  tracker_device: "T20"        # Vive tracker label (matches the sticker on the device)
+  tracker_config: null         # Optional: pysurvive --config path
+  tracker_lh_config: null      # Optional: pysurvive --lh JSON
 
+# ----------------------- Pika Gripper (motor + wrist camera)
+pika_gripper:
+  port: ""                     # Empty → auto-detect from /dev/ttyUSB*.
+                               # Override with $PIKA_GRIPPER_PORT.
+  enable_motor: true
+
+# ----------------------- Cameras
+# Two streams are recorded by default:
+#   - cam_global: external D435i (workspace overview)
+#   - cam_wrist : Pika gripper's onboard RealSense (D405 by default)
+# Names must match the urscript_config.yaml so models can train across modes.
 cameras:
-  # External D435i (side/front view of the workspace).
-  # Name kept in sync with urscript_config.yaml so both collection modes
-  # produce datasets with the same feature keys (observation.images.cam_global,
-  # observation.images.cam_wrist) — checkpoints trained on one mode load
-  # cleanly on the other.
   - name: cam_global
-    serial: ""                 # D435i serial number; empty = first found
+    type: realsense           # MultiCamera handles this
+    serial: "405622074939"    # D435i serial
     width: 640
     height: 480
     fps: 30
     enable_depth: false
 
-  # Pika gripper built-in wrist camera
-  # source: "pika_gripper" tells collect_pika.py to read from the gripper object
   - name: cam_wrist
-    source: "pika_gripper"
-    device_index: 0            # UVC device index of the wrist camera (try 0, 1, 2…)
+    type: pika_wrist          # routed through PikaGripper
+    kind: realsense           # "realsense" | "fisheye"
+    serial: "260522276066"    # D405 serial; empty = first found
     width: 640
     height: 480
     fps: 30
 
+# ----------------------- Teleoperation
+teleoperation:
+  # Position scaling: 1 cm of Sense motion → K cm of UR motion (rotation = 1:1).
+  # 1.0 = 1:1   2.0 = amplify 2×   0.7 = slightly damped (default for safety).
+  # Overridden by env var $PIKA_SCALE.
+  position_scale: 1.0
+
+  # Soft workspace limit — drop servoL targets whose distance from the
+  # arm's "zero" pose exceeds this many metres. Set 99.0 to disable.
+  # Overridden by env var $PIKA_MAX_DELTA_M.
+  max_delta_m: 1.0
+
+  # Servo command rate. 50 Hz matches pika_remote_ur's reference teleop loop.
+  servo_hz: 50
+
+  # Rigid offset between the pika frame (tracker output) and the arm's tool
+  # frame. Run collect/calibrate_pika_to_arm.py once on a new rig to refit.
+  # Default values are taken from the pika_remote_ur reference rig.
+  pika_to_arm: [0.0, 0.0, 0.0, 1.703151, 1.539109, 1.728148]
+
+  # EMA low-pass smoothing applied BEFORE servoL and BEFORE recording.
+  # alpha = 1.0  → passthrough (no smoothing, raw hand signal).
+  # alpha = 0.5  → light smoothing.
+  # alpha = 0.3  → recommended starting point — eliminates micro-tremor
+  #                without making teleop feel sluggish (lag ~30-60ms @ 50Hz).
+  # alpha = 0.15 → heavy smoothing, useful for very fine work but laggy.
+  #
+  # Tuning:
+  #  - Watch the recorded action curve in the dataset; if it still looks
+  #    spiky, lower alpha. If teleop feels mushy, raise it.
+  #  - Override at runtime with $PIKA_SMOOTHING_ALPHA / $PIKA_GRIPPER_SMOOTHING_ALPHA.
+  smoothing:
+    pose_alpha: 0.5        # tracker XYZ + RPY (arm motion smoothing)
+    gripper_alpha: 0.5     # Sense encoder (gripper command smoothing)
+
+  # ----------------------------------------------------------------
+  # Safety filtering — pre-flight check on every servoL target.
+  #
+  # Why: the Pika gripper is large; certain TCP poses produce arm joint
+  # configurations that make the gripper body collide with the wrist or
+  # forearm housing, triggering a UR Protective Stop. UR's joint limits
+  # don't catch self-collision. We add three soft layers that reject
+  # bad targets BEFORE servoL is sent.
+  #
+  # How to dial these in:
+  #   1) Run `python tools/probe_joint_limits.py` (or just watch the
+  #      pendant joint readout while teleoperating slowly to all extremes).
+  #   2) Find the joint values at which the gripper hits the arm.
+  #   3) Set joint_limits below to a band that excludes those values.
+  # ----------------------------------------------------------------
+  safety:
+    # TCP world-frame bounding box. Targets are CLAMPED into this box
+    # (soft constraint, never rejected). null on either side = no limit.
+    workspace:
+      x: [-0.9, 0.9]
+      y: [-0.9, 0.9]
+      z: [0.05, 1.10]    # don't allow servoL targets below table or above safe height
+
+    # Per-joint software limits (in radians). Targets whose UR-IK
+    # solution falls outside any of these are REJECTED (no servoL).
+    # Order: [base, shoulder, elbow, wrist1, wrist2, wrist3]
+    # Each entry: [min, max] or null to disable that joint's limit.
+    #
+    # IMPORTANT: UR's physical joint range is ±2π ≈ ±6.28 rad on every
+    # joint (the wrist can spin ±360°). Don't pick ±π — that wrongly
+    # rejects half the workspace and makes ur_rtde's watchdog kill the
+    # control script.
+    #
+    # Default below is "all null" — no joint is filtered. Run
+    # `python tools/probe_joint_limits.py` to find the configurations
+    # that put the gripper into collision, then paste the suggested
+    # bounds here.
+    joint_limits:
+      - null                 # base     q[0]
+      - null                 # shoulder q[1]
+      - null                 # elbow    q[2]
+      - null                 # wrist 1  q[3]   ← typical offender; tighten after probing
+      - null                 # wrist 2  q[4]
+      - null                 # wrist 3  q[5]
+
+    # Maximum tilt of the gripper from "pointing straight down" (degrees).
+    # null = no limit. Set e.g. 90.0 to forbid the gripper ever pointing
+    # upward. Useful when you only ever want top-down grasps.
+    max_tilt_from_down_deg: null
+
+# ----------------------- Recording
 collection:
-  fps: 30
+  fps: 30                      # frames per second written to the dataset
   output_dir: "datasets"
   dataset_name: "ur7e_pika_demo"
 
-teleoperation:
-  speed_scale: 0.3             # Scale applied to Sense translation deltas (m/s per unit)
-  rotation_scale: 0.5          # Scale applied to Sense rotation deltas (rad/s per unit)
-  workspace_limits:            # (optional) TCP position clipping in metres
-    x: [-0.8, 0.8]
-    y: [-0.8, 0.8]
-    z: [0.05, 1.2]
+# ----------------------- Live preview window (cv2)
+# Both teleop_only.py and collect_pika.py open a single window that shows
+# cam_global + cam_wrist side by side at 30 Hz, with a status line for teleop
+# state and recording progress. Press 'q' or Esc in the window to close it
+# (the teleop / recording loop keeps running).
+preview:
+  enabled: true
+  # Height (in pixels) each camera tile is resized to before being stacked
+  # side-by-side. The window's total width is 2 × height × (camera aspect).
+  # Reference values:
+  #   360  → small, ~1280×360 window (lightweight)
+  #   540  → medium, ~1920×540
+  #   720  → large, ~2560×720    ← default (good on 1440p+ displays)
+  #   900  → very large, ~3200×900 (only on 4K monitors)
+  height: 720
