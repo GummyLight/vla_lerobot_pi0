@@ -166,6 +166,8 @@ def main():
         max_lin_vel_m_s=float(teleop_cfg.get("max_lin_vel_m_s", 0.30)),
         max_ang_vel_rad_s=float(teleop_cfg.get("max_ang_vel_rad_s", 1.50)),
         max_joint_vel_rad_s=float(teleop_cfg.get("max_joint_vel_rad_s", 1.50)),
+        base_limit_rad=float(teleop_cfg.get("base_limit_rad", 2.6)),
+        base_limit_damping_threshold=float(teleop_cfg.get("base_limit_damping_threshold", 0.8)),
     )
 
     robot.connect(use_control=True)

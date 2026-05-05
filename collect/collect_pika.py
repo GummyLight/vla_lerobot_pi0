@@ -112,6 +112,8 @@ class PikaTeleopController:
         max_lin_vel_m_s: float = 0.30,
         max_ang_vel_rad_s: float = 1.50,
         max_joint_vel_rad_s: float = 1.50,
+        base_limit_rad: float = 2.6,
+        base_limit_damping_threshold: float = 0.8,
     ):
         self.robot = robot
         self.sense = sense
@@ -210,11 +212,20 @@ class PikaTeleopController:
         #                          (atan2(y, x)), solve IK, then servoJ.
         #                          Makes circular / large-XY motions track
         #                          via the base, leaving wrist room.
-        self.ik_mode = ik_mode if ik_mode in (
-            "ur_native_servol", "base_biased_servoj") else "ur_native_servol"
+        #   "base_biased_adaptive" — same as base_biased_servoj, but with:
+        #                          - fallback to ur_native if biased IK fails
+        #                          - adaptive damping near joint limits
+        #                          - EMA smoothing on bias demand
+        valid_modes = ("ur_native_servol", "base_biased_servoj", "base_biased_adaptive")
+        self.ik_mode = ik_mode if ik_mode in valid_modes else "ur_native_servol"
         # Don't bias the base when the TCP is very close to the base axis —
         # atan2 becomes noisy and you'd spin the base for sub-cm jitter.
         self.base_bias_min_radius_m = float(base_bias_min_radius_m)
+        
+        # Adaptive parameters (for base_biased_adaptive mode)
+        self.base_limit_rad = float(base_limit_rad)  # ~150 degrees, adjust if self-collision occurs
+        self.base_limit_damping_threshold = float(base_limit_damping_threshold)  # 80% of limit triggers damping
+        self._last_base_bias = 0.0  # For EMA smoothing on bias demand
 
         # Worker thread
         self._lock = threading.Lock()
@@ -589,7 +600,7 @@ class PikaTeleopController:
                             float(rotvec[0]), float(rotvec[1]), float(rotvec[2])]
 
                 sent = False
-                if self.ik_mode == "base_biased_servoj":
+                if self.ik_mode in ("base_biased_servoj", "base_biased_adaptive"):
                     # 2) Smart IK seed: bias q[0] by the *change in TCP XY
                     #    direction* relative to current. This is the only
                     #    base-orientation-agnostic way (we don't know which
@@ -609,12 +620,34 @@ class PikaTeleopController:
                         cur_az = float(np.arctan2(cur_tcp[1], cur_tcp[0]))
                         tgt_az = float(np.arctan2(target[1], target[0]))
                         # Wrap into (-π, +π] so we always take the short path.
-                        d = (tgt_az - cur_az + np.pi) % (2 * np.pi) - np.pi
+                        d_raw = (tgt_az - cur_az + np.pi) % (2 * np.pi) - np.pi
+                        
+                        # Adaptive damping (only for base_biased_adaptive)
+                        if self.ik_mode == "base_biased_adaptive":
+                            # Apply damping when approaching joint limits
+                            proximity = abs(q_current[0]) / self.base_limit_rad
+                            if proximity > self.base_limit_damping_threshold:
+                                # Reduce bias strength linearly: at 80% limit -> 0.5×, at 100% limit -> 0.2×
+                                damping_factor = max(0.2, 1.5 - proximity)  # 0.2 to 1.0
+                                d_raw = d_raw * damping_factor
+                            
+                            # EMA smoothing on bias demand (low-pass filter)
+                            d_smooth = 0.3 * d_raw + 0.7 * self._last_base_bias
+                            self._last_base_bias = d_smooth
+                            d = d_smooth
+                        else:
+                            d = d_raw
+                        
                         q_seed[0] = q_current[0] + d
+                    
                     q_target = self.robot.get_inverse_kinematics(pose_cmd, q_seed)
                     self._dbg_ik_called += 1
                     if q_target is None:
                         self._dbg_ik_failed += 1
+                        # Fallback to ur_native_servol if biased IK fails
+                        if self.ik_mode == "base_biased_adaptive":
+                            q_target = self.robot.get_inverse_kinematics(pose_cmd, q_current)
+                    
                     if q_target is not None:
                         # Unwrap each joint to the branch closest to current
                         # Q so we don't ask servoJ for a 2π flip in one tick.
@@ -777,6 +810,8 @@ class PikaCollector:
             max_lin_vel_m_s=float(teleop_cfg.get("max_lin_vel_m_s", 0.30)),
             max_ang_vel_rad_s=float(teleop_cfg.get("max_ang_vel_rad_s", 1.50)),
             max_joint_vel_rad_s=float(teleop_cfg.get("max_joint_vel_rad_s", 1.50)),
+            base_limit_rad=float(teleop_cfg.get("base_limit_rad", 2.6)),
+            base_limit_damping_threshold=float(teleop_cfg.get("base_limit_damping_threshold", 0.8)),
         )
 
         # Live preview window (cam_global + cam_wrist). Created in connect()

@@ -93,6 +93,23 @@ python collect/collect_pika.py \
     --config collect/configs/pika_config.yaml \
     --dataset_name my_pika_demo \
     --task "pour liquid into cup"
+
+Alternatively, use the lightweight Pika teleop UI for manual control and tuning
+without recording. From the repo root you can run the script in the `collect/`
+folder and point the config explicitly, or run it from inside `collect/`:
+
+```bash
+# from repo root
+python collect/teleop_only.py --config collect/configs/pika_config.yaml
+
+# or, if you `cd collect/` first
+python teleop_only.py --config configs/pika_config.yaml
+```
+
+`teleop_only.py` opens a minimal teleoperation UI using the vendored Pika SDK
+and previews the cameras. It reuses the same teleop logic as
+`collect/collect_pika.py` but does not write recorded episodes (useful for
+sanity checks and tuning `PIKA_SCALE` / `PIKA_MAX_DELTA_M`).
 ```
 
 Output goes to `datasets/<dataset_name>/` in **LeRobot v3.0** format and is

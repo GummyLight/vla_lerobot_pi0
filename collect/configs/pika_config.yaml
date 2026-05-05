@@ -49,7 +49,7 @@ teleoperation:
   # Position scaling: 1 cm of Sense motion → K cm of UR motion (rotation = 1:1).
   # 1.0 = 1:1   2.0 = amplify 2×   0.7 = slightly damped (default for safety).
   # Overridden by env var $PIKA_SCALE.
-  position_scale: 1.0
+  position_scale: 0.7
 
   # Soft workspace fence — hold pose if the target drifts more than
   # this many metres from the trigger-on "zero" pose. Originally meant
@@ -76,12 +76,21 @@ teleoperation:
   #                        teleop because the BASE does the heavy lifting,
   #                        not the wrist. Use this unless you have a
   #                        specific reason not to.
-  ik_mode: base_biased_servoj
+  #   base_biased_adaptive — (RECOMMENDED) same as base_biased_servoj, but
+  #                        with fallback to ur_native_servol when IK fails,
+  #                        and with adaptive damping near joint limits.
+  ik_mode: base_biased_adaptive
 
   # Don't bias the base when the TCP is closer than this many metres to
   # the base axis (atan2 becomes ill-conditioned, and you'd see the base
   # spinning for tiny lateral motion). 5 cm is a safe default.
-  base_bias_min_radius_m: 0.05
+  base_bias_min_radius_m: 0.15
+
+  # Adaptive damping for base_biased_adaptive mode: when q[0] approaches
+  # ±base_limit_rad, reduce the bias magnitude to avoid self-collision.
+  # At 80% of limit, bias is fully damped (multiplied by 0.3).
+  base_limit_rad: 2.6  # ~150 degrees
+  base_limit_damping_threshold: 0.8
 
   # Rigid offset between the pika frame (tracker output) and the arm's tool
   # frame. Run collect/calibrate_pika_to_arm.py once on a new rig to refit.
@@ -104,8 +113,8 @@ teleoperation:
     # quaternions (S³). Both consume the same alpha. 0.3 is a good default
     # for Vive→UR — eliminates lighthouse jitter without making teleop
     # feel sluggish (~30-60ms effective lag).
-    pose_alpha: 0.3
-    gripper_alpha: 0.5
+    pose_alpha: 0.5
+    gripper_alpha: 0.1
 
   # Per-tick velocity caps applied BEFORE servoJ/servoL dispatch. These
   # are the primary tool for keeping the recorded action curve smooth

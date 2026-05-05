@@ -98,6 +98,23 @@ python collect/collect_pika.py \
 Windows 排错全在 [collect/README_CN.md](collect/README_CN.md)
 （English: [collect/README.md](collect/README.md)）。
 
+另外，项目提供了一个轻量级的 Pika 遥操作界面用于手动控制与参数调试
+（不录数据）。你可以在仓库根目录执行脚本并指定配置，也可以先切到
+`collect/` 目录再运行：
+
+```bash
+# 在仓库根目录执行
+python collect/teleop_only.py --config collect/configs/pika_config.yaml
+
+# 或者先进入 collect/ 再运行
+cd collect
+python teleop_only.py --config configs/pika_config.yaml
+```
+
+`teleop_only.py` 使用项目中 vendored 的 Pika SDK 并复用了
+`collect_pika.py` 的遥操作逻辑，但不会写入采集文件。适合用于流程
+
+
 ## 1. 数据集格式
 
 当前 lerobot（包结构重构后）只读 **LeRobot v3.0** 数据集。每个数据集应是这样：
