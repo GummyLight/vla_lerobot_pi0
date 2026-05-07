@@ -822,6 +822,9 @@ class PikaCollector:
         self._enable_preview = bool(preview_cfg.get("enabled", True))
         self._preview_height = int(preview_cfg.get("height", 720))
 
+        # Save the first episode's starting joint pose to replay between runs.
+        self._start_q: Optional[np.ndarray] = None
+
     # ------------------------------------------------------------------
     # connect / disconnect
     # ------------------------------------------------------------------
@@ -905,6 +908,22 @@ class PikaCollector:
         ]).astype(np.float32)
         return state, action
 
+    def _capture_start_pose_if_needed(self):
+        if self._start_q is not None:
+            return
+        current_q = self.robot.get_state()["joint_positions"].astype(np.float32)
+        self._start_q = current_q.copy()
+        print(f"[Collector] Captured episode start pose q={np.round(self._start_q, 3).tolist()}")
+
+    def _return_to_start_pose(self):
+        if self._start_q is None:
+            return
+        if self.teleop._thread is not None and self.teleop._thread.is_alive():
+            self.teleop.stop()
+        print("[Collector] Returning to start pose...")
+        self.robot.move_j(self._start_q.tolist(), speed=0.15, acc=0.15, asynchronous=False)
+        time.sleep(0.2)
+
     # ------------------------------------------------------------------
     # episode loop
     # ------------------------------------------------------------------
@@ -913,28 +932,37 @@ class PikaCollector:
         print(f"\n{'='*60}")
         print(f"  Episode {self.writer.episode_index}  |  task: {task}")
         print(f"{'='*60}")
-        print("  Pull the Pika Sense trigger to ENGAGE teleop, then release "
-              "when ready.")
-        print("  Press Enter here to START recording (Ctrl+C here = quit "
-              "without recording this episode).")
+        print("  Pull the Pika Sense trigger to START recording.")
+        print("  Pull again to STOP recording, then answer [Y/n/q].")
+
+        if self.teleop._thread is None or not self.teleop._thread.is_alive():
+            self.teleop.start()
+
+        print("[Collector] Waiting for teleop=ENGAGED to start recording...")
         try:
-            input(">> ")
-        except (KeyboardInterrupt, EOFError):
-            print("\n[Collector] Aborted before recording started.")
-            return False
+            while not self.teleop.is_teleop_active:
+                if self.teleop.aborted:
+                    print(f"\n[Collector] ABORTED — {self.teleop.abort_reason}")
+                    return False
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            print("\n[Collector] Canceled before recording started.")
+            return True
 
         fps = self.writer.fps
         period = 1.0 / fps
         self.writer.start_episode(task)
-        if self.teleop._thread is None or not self.teleop._thread.is_alive():
-            self.teleop.start()
 
-        print(f"[Collector] Recording @ {fps} fps. Ctrl+C to stop.\n")
+        self._capture_start_pose_if_needed()
+
+        print(f"[Collector] Recording @ {fps} fps.\n")
         start = time.time()
         n = 0
         controller_lost_during_episode = False
         try:
             while True:
+                if not self.teleop.is_teleop_active:
+                    break
                 if self.teleop.aborted:
                     controller_lost_during_episode = True
                     print(f"\n[Collector] ABORTED — not user-initiated.")
@@ -965,6 +993,11 @@ class PikaCollector:
         if self.previewer is not None:
             self.previewer.set_status("")
 
+        if n == 0:
+            print("\n[Collector] No frames captured; discarding episode.")
+            self.writer.end_episode(discard=True)
+            return True
+
         if self.writer._rows:
             self.writer._rows[-1]["next.done"] = True
         print(f"\n[Collector] Captured {n} frames ({n / fps:.1f}s).")
@@ -983,11 +1016,13 @@ class PikaCollector:
             print()
         if choice == "q":
             self.writer.end_episode(discard=True)
+            self._return_to_start_pose()
             return False
         self.writer.end_episode(discard=(choice == "n"))
+        self._return_to_start_pose()
         return True
 
-    def run(self, tasks):
+    def run(self, tasks, *, skip_menu: bool = False):
         """Run the collection loop. ``tasks`` is a list of task strings;
         the operator picks one per episode by typing its number.
         """
@@ -1007,40 +1042,46 @@ class PikaCollector:
         try:
             self.teleop.start()
             self._last_task_idx = 0
-            while True:
-                _menu()
-                try:
-                    cmd = input(">> ").strip().lower()
-                except (KeyboardInterrupt, EOFError):
-                    print()
-                    break
-                if cmd == "q":
-                    break
-                if cmd == "a":
+            if skip_menu:
+                task = tasks[0]
+                while True:
+                    if not self.run_episode(task):
+                        break
+            else:
+                while True:
+                    _menu()
                     try:
-                        new_task = input("New task instruction: ").strip()
+                        cmd = input(">> ").strip().lower()
                     except (KeyboardInterrupt, EOFError):
                         print()
+                        break
+                    if cmd == "q":
+                        break
+                    if cmd == "a":
+                        try:
+                            new_task = input("New task instruction: ").strip()
+                        except (KeyboardInterrupt, EOFError):
+                            print()
+                            continue
+                        if new_task:
+                            tasks.append(new_task)
+                            self._last_task_idx = len(tasks) - 1
+                            print(f"  Added task [{len(tasks)}]: {new_task!r}")
                         continue
-                    if new_task:
-                        tasks.append(new_task)
-                        self._last_task_idx = len(tasks) - 1
-                        print(f"  Added task [{len(tasks)}]: {new_task!r}")
-                    continue
-                if cmd == "s" or cmd == "":
-                    task = tasks[self._last_task_idx]
-                elif cmd.isdigit():
-                    idx = int(cmd) - 1
-                    if not (0 <= idx < len(tasks)):
-                        print(f"  !! Invalid task number: {cmd}")
+                    if cmd == "s" or cmd == "":
+                        task = tasks[self._last_task_idx]
+                    elif cmd.isdigit():
+                        idx = int(cmd) - 1
+                        if not (0 <= idx < len(tasks)):
+                            print(f"  !! Invalid task number: {cmd}")
+                            continue
+                        self._last_task_idx = idx
+                        task = tasks[idx]
+                    else:
+                        print(f"  !! Unknown command: {cmd!r}")
                         continue
-                    self._last_task_idx = idx
-                    task = tasks[idx]
-                else:
-                    print(f"  !! Unknown command: {cmd!r}")
-                    continue
-                if not self.run_episode(task):
-                    break
+                    if not self.run_episode(task):
+                        break
         finally:
             self.writer.finalize()
             self.disconnect()
@@ -1125,7 +1166,8 @@ def main():
 
     collector = PikaCollector(cfg, writer)
     collector.connect()
-    collector.run(tasks=tasks)
+    single_task_mode = bool(args.task) and not args.tasks and not args.tasks_file
+    collector.run(tasks=tasks, skip_menu=single_task_mode)
 
 
 if __name__ == "__main__":

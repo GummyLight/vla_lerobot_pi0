@@ -49,7 +49,7 @@ teleoperation:
   # Position scaling: 1 cm of Sense motion → K cm of UR motion (rotation = 1:1).
   # 1.0 = 1:1   2.0 = amplify 2×   0.7 = slightly damped (default for safety).
   # Overridden by env var $PIKA_SCALE.
-  position_scale: 0.7
+  position_scale: 1
 
   # Soft workspace fence — hold pose if the target drifts more than
   # this many metres from the trigger-on "zero" pose. Originally meant
@@ -79,7 +79,7 @@ teleoperation:
   #   base_biased_adaptive — (RECOMMENDED) same as base_biased_servoj, but
   #                        with fallback to ur_native_servol when IK fails,
   #                        and with adaptive damping near joint limits.
-  ik_mode: base_biased_adaptive
+  ik_mode: ur_native_servol 
 
   # Don't bias the base when the TCP is closer than this many metres to
   # the base axis (atan2 becomes ill-conditioned, and you'd see the base
@@ -113,8 +113,8 @@ teleoperation:
     # quaternions (S³). Both consume the same alpha. 0.3 is a good default
     # for Vive→UR — eliminates lighthouse jitter without making teleop
     # feel sluggish (~30-60ms effective lag).
-    pose_alpha: 0.5
-    gripper_alpha: 0.1
+    pose_alpha: 0.15
+    gripper_alpha: 0.9
 
   # Per-tick velocity caps applied BEFORE servoJ/servoL dispatch. These
   # are the primary tool for keeping the recorded action curve smooth
@@ -203,6 +203,8 @@ collection:
   fps: 30                      # frames per second written to the dataset
   output_dir: "datasets"
   dataset_name: "ur7e_pika_demo"
+  require_engaged_before_record: true
+  record_start_settle_s: 0.5
 
 # ----------------------- Live preview window (cv2)
 # Both teleop_only.py and collect_pika.py open a single window that shows

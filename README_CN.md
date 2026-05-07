@@ -113,6 +113,9 @@ python teleop_only.py --config configs/pika_config.yaml
 
 `teleop_only.py` 使用项目中 vendored 的 Pika SDK 并复用了
 `collect_pika.py` 的遥操作逻辑，但不会写入采集文件。适合用于流程
+联调、基站稳定性检查和遥操作参数调试。每次移动或重新调试 Vive 基站后，
+先按 [Pika / Vive 基站调试后检查清单](docs/pika_lighthouse_checklist_cn.md)
+重新校准、同步配置并释放旧定位进程，再启动遥操作。
 
 
 ## 1. 数据集格式

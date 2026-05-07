@@ -24,6 +24,7 @@ Authoritative spec references (lerobot @ main):
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -152,8 +153,11 @@ class LeRobotWriter:
                 pass
 
         # Resume state — count what's already staged
-        self.episode_index = self._count_staged_episodes()
-        self.global_index = self._sum_staged_frame_count()
+        # self.episode_index = self._count_staged_episodes()
+        # self.global_index = self._sum_staged_frame_count()
+
+        self.episode_index = self._count_all_episodes()
+        self.global_index = self._sum_all_frame_count()
 
         # Per-episode buffers
         self._rows: List[dict] = []
@@ -165,6 +169,50 @@ class LeRobotWriter:
         self._video_writer_via_ffmpeg: Dict[str, bool] = {}
         self._episode_task: str = ""
         self._ep_start: float = 0.0
+
+    def _count_all_episodes(self) -> int:
+        """Return the next episode index (max existing + 1)."""
+        # Check staged episodes: find max episode number
+        staged_max = -1
+        for p in self.staging_dir.glob("episode_*.parquet"):
+            try:
+                ep_num = int(p.stem.split("_")[1])  # episode_NNNNNN
+                staged_max = max(staged_max, ep_num)
+            except (ValueError, IndexError):
+                pass
+        
+        # Check finalized v3 episodes: read meta parquet for max episode_index
+        finalized_max = -1
+        episodes_dir = self.root / "meta" / "episodes"
+        if episodes_dir.exists():
+            for ep_file in episodes_dir.glob("chunk-*/file-*.parquet"):
+                try:
+                    df = pd.read_parquet(ep_file)
+                    if "episode_index" in df.columns and len(df) > 0:
+                        finalized_max = max(finalized_max, int(df["episode_index"].max()))
+                except Exception:
+                    pass
+        
+        overall_max = max(staged_max, finalized_max)
+        if overall_max >= 0:
+            return overall_max + 1  # next episode index
+        return 0
+
+    def _sum_all_frame_count(self) -> int:
+        """Return total frame count across all finalized + staged data."""
+        staged = self._sum_staged_frame_count()
+        
+        # Count finalized frames from data parquet files
+        finalized = 0
+        data_dir = self.root / "data"
+        if data_dir.exists():
+            for data_file in data_dir.glob("chunk-*/file-*.parquet"):
+                try:
+                    finalized += pq.read_metadata(str(data_file)).num_rows
+                except Exception:
+                    pass
+        
+        return staged + finalized
 
     # ------------------------------------------------------------------
     # Staging-side helpers
@@ -215,7 +263,8 @@ class LeRobotWriter:
         # Lazy-create video writers on first frame so we know the image size.
         # Prefer the ffmpeg pipe writer (CFR H.264 in one pass); fall back to
         # cv2 mp4v + post-encode when ffmpeg isn't on PATH.
-        use_ffmpeg = _ffmpeg_available()
+        use_ffmpeg = (_ffmpeg_available()
+                  and os.environ.get("LEROBOT_ENABLE_FFMPEG_PIPE") == "1")
         for cam_key, img in images.items():
             if cam_key not in self._video_writers and cam_key in self.camera_keys:
                 h, w = img.shape[:2]
@@ -256,13 +305,19 @@ class LeRobotWriter:
         # writer release failures — the staged file is going to be deleted
         # anyway. Otherwise we'd lose the whole episode just because ffmpeg
         # choked on a corrupted last frame.
+        release_errors = []
         for w in self._video_writers.values():
             try:
                 w.release()
             except Exception as e:
-                if not discard:
-                    raise
-                print(f"  (writer release failed during discard: {e}; ignored)")
+                release_errors.append(e)
+                if discard:
+                    print(f"  (writer release failed during discard: {e}; ignored)")
+        if release_errors and not discard:
+            print("  (writer release failed; auto-discarding episode to avoid crash)")
+            for e in release_errors:
+                print(f"  - {e}")
+            discard = True
         self._video_writers = {}
 
         if discard or not self._rows:

@@ -8,7 +8,7 @@ policy:
 
 # Language instruction. MUST match one of the strings the policy was trained on
 # (see datasets/open_3d_printer_diversified/meta/tasks.parquet).
-task: "open the 3D printer"
+task: "take out the green wheel from the 3D printer"
 
 robot:
   ip: 169.254.175.10               # UR controller IP (set this!)
@@ -23,14 +23,14 @@ robot:
 cameras:
   # Order matters: model expects cam_global + cam_wrist with these exact keys.
   - name: cam_global              # static external view of the workspace
-    serial: "420222071502"
+    serial: "405622074939"
     width: 640
     height: 480
     fps: 30
     enable_depth: false           # Set true to also capture depth frames (model ignores)
 
   - name: cam_wrist               # mounted on the end-effector, moves with the arm
-    serial: "405622074939"
+    serial: "260522276066"
     width: 640
     height: 480
     fps: 30

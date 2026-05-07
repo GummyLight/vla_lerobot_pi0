@@ -4,28 +4,119 @@ Quick D435i preview tool — verify camera framing before running collect_*.py.
 Usage:
     python preview_cameras.py                # preview the first camera found
     python preview_cameras.py --serial 405622074939
-    python preview_cameras.py --all          # all cameras side by side
+    python preview_cameras.py --all          # all cameras side by side, labelled from config
     python preview_cameras.py --all --fps 15 # halve the USB bandwidth
 
-Press 'q' in the preview window to quit.
+Press 'q' in the preview window to quit. Press 's' to save a snapshot.
 """
 
+from __future__ import annotations
+
 import argparse
+from datetime import datetime
+from pathlib import Path
 import sys
 import time
 
 import cv2
 import numpy as np
-import pyrealsense2 as rs
+
+rs = None
+
+try:
+    import yaml
+except Exception:
+    yaml = None
+
+
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent
+
+
+def require_rs():
+    global rs
+    if rs is not None:
+        return rs
+    try:
+        import pyrealsense2 as _rs
+    except ModuleNotFoundError:
+        print("[preview] pyrealsense2 is not installed in this Python environment.")
+        print("          Activate the collection environment, e.g. `conda activate vla-pi0`,")
+        print("          then rerun the preview command.")
+        raise SystemExit(2)
+    rs = _rs
+    return rs
 
 
 def list_devices():
+    rs = require_rs()
     ctx = rs.context()
     return [d.get_info(rs.camera_info.serial_number) for d in ctx.devices]
 
 
-def describe_devices():
+def default_config_path() -> Path | None:
+    """Find the camera config whether the script is run from repo root or collect/."""
+    candidates = [
+        Path.cwd() / "configs/pika_config.yaml",
+        Path.cwd() / "collect/configs/pika_config.yaml",
+        HERE / "configs/pika_config.yaml",
+        REPO_ROOT / "collect/configs/pika_config.yaml",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def load_camera_roles(config_path: str | None) -> dict[str, dict]:
+    """Return serial -> camera config for role labels such as cam_global/cam_wrist."""
+    if not config_path:
+        return {}
+    if yaml is None:
+        print("[preview] PyYAML not available; camera role labels disabled.")
+        return {}
+
+    path = Path(config_path).expanduser()
+    if not path.exists():
+        print(f"[preview] Config not found: {path}; camera role labels disabled.")
+        return {}
+
+    with path.open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    roles = {}
+    for cam in cfg.get("cameras", []) or []:
+        serial = str(cam.get("serial") or "").strip()
+        if not serial:
+            continue
+        roles[serial] = {
+            "name": cam.get("name", serial),
+            "type": cam.get("type", ""),
+            "width": cam.get("width"),
+            "height": cam.get("height"),
+            "fps": cam.get("fps"),
+        }
+    return roles
+
+
+def order_serials(serials: list[str], roles: dict[str, dict]) -> list[str]:
+    """Show configured cameras first in YAML order, then any extra devices."""
+    configured = [s for s in roles if s in serials]
+    extras = [s for s in serials if s not in configured]
+    return configured + extras
+
+
+def label_for(serial: str, roles: dict[str, dict]) -> str:
+    role = roles.get(serial)
+    if not role:
+        return f"unconfigured  S/N={serial}"
+    return f"{role['name']}  S/N={serial}"
+
+
+def describe_devices(roles=None):
     """Print serial / firmware / USB-type for every detected D435i."""
+    rs = require_rs()
+    roles = roles or {}
     ctx = rs.context()
     devs = list(ctx.devices)
     if not devs:
@@ -47,7 +138,9 @@ def describe_devices():
                 info[key] = d.get_info(attr)
             except Exception:
                 info[key] = "?"
-        print(f"  - {info['name']}  S/N={info['serial']}")
+        role = roles.get(s, {})
+        role_txt = f"  role={role.get('name')}" if role else "  role=<not in config>"
+        print(f"  - {info['name']}  S/N={info['serial']}{role_txt}")
         print(f"      firmware     : {info['firmware']}  (recommended {info['recommended_firmware']})")
         print(f"      usb_type     : {info['usb_type']}    <-- must be 3.x for color stream")
         if str(info['usb_type']).startswith("2"):
@@ -56,7 +149,8 @@ def describe_devices():
     return serials
 
 
-def open_pipeline(serial: str, width: int, height: int, fps: int) -> rs.pipeline:
+def open_pipeline(serial: str, width: int, height: int, fps: int):
+    rs = require_rs()
     p = rs.pipeline()
     c = rs.config()
     c.enable_device(serial)
@@ -65,7 +159,7 @@ def open_pipeline(serial: str, width: int, height: int, fps: int) -> rs.pipeline
     return p
 
 
-def warmup(pipe: rs.pipeline, serial: str, n: int = 15):
+def warmup(pipe, serial: str, n: int = 15):
     for _ in range(n):
         try:
             pipe.wait_for_frames(timeout_ms=10000)
@@ -86,7 +180,38 @@ def warmup(pipe: rs.pipeline, serial: str, n: int = 15):
             raise SystemExit(2)
 
 
-def preview(serials, width, height, fps):
+def draw_label(img, text, subtitle=""):
+    """Readable overlay for camera role + serial."""
+    pad = 8
+    y0 = 8
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.65
+    thickness = 2
+    lines = [text] + ([subtitle] if subtitle else [])
+    line_h = 26
+    box_h = pad * 2 + line_h * len(lines)
+    cv2.rectangle(img, (0, 0), (img.shape[1], box_h), (0, 0, 0), -1)
+    for i, line in enumerate(lines):
+        color = (0, 255, 0) if i == 0 else (0, 255, 255)
+        cv2.putText(img, line, (10, y0 + pad + line_h * i + 12),
+                    font, scale, color, thickness, cv2.LINE_AA)
+
+
+def stack_images(imgs, target_height: int | None):
+    if not imgs:
+        return np.zeros((480, 640, 3), dtype=np.uint8)
+    resized = []
+    for img in imgs:
+        if target_height:
+            h, w = img.shape[:2]
+            new_w = max(1, int(round(w * target_height / h)))
+            img = cv2.resize(img, (new_w, target_height))
+        resized.append(img)
+    return np.hstack(resized)
+
+
+def preview(serials, width, height, fps, roles=None, target_height=None, snapshot_dir="snapshots"):
+    roles = roles or {}
     print(f"[preview] Opening {len(serials)} camera(s) at {width}x{height}@{fps}...")
     pipes = []
     try:
@@ -100,18 +225,35 @@ def preview(serials, width, height, fps):
             warmup(p, s, n=15)
             print(f"  warmed up {s}", flush=True)
 
-        print("[preview] Streaming. Press 'q' to quit.", flush=True)
+        print("[preview] Streaming. Press 'q' to quit, 's' to save snapshot.", flush=True)
         while True:
             imgs = []
             for s, p in pipes:
                 f = p.wait_for_frames(timeout_ms=2000).get_color_frame()
                 img = np.asanyarray(f.get_data())
-                cv2.putText(img, s, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6, (0, 255, 0), 2)
+                role = roles.get(s, {})
+                subtitle = "configured" if role else "not in config"
+                if role:
+                    cfg_parts = [
+                        str(v) for v in (role.get("type"), role.get("width"), role.get("height"), role.get("fps"))
+                        if v not in (None, "")
+                    ]
+                    if cfg_parts:
+                        subtitle = "config: " + " ".join(cfg_parts)
+                draw_label(img, label_for(s, roles), subtitle)
                 imgs.append(img)
-            cv2.imshow("D435i preview  (q=quit)", np.hstack(imgs))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            canvas = stack_images(imgs, target_height)
+            cv2.imshow("RealSense preview  (q=quit, s=snapshot)", canvas)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q") or key == 27:
                 break
+            if key == ord("s"):
+                out_dir = Path(snapshot_dir)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                out = out_dir / f"camera_preview_{ts}.png"
+                cv2.imwrite(str(out), canvas)
+                print(f"[preview] Snapshot saved: {out}")
     finally:
         for _, p in pipes:
             try:
@@ -129,9 +271,25 @@ def main():
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--config", default=None,
+                    help="YAML config with cameras list. Defaults to configs/pika_config.yaml if found.")
+    ap.add_argument("--no-config", action="store_true",
+                    help="Do not label/order cameras from config.")
+    ap.add_argument("--target-height", type=int, default=480,
+                    help="Resize each preview tile to this height before stacking; 0 disables resizing.")
+    ap.add_argument("--snapshot-dir", default="snapshots",
+                    help="Directory for snapshots saved with 's'.")
     args = ap.parse_args()
 
-    found = describe_devices()
+    config_path = None if args.no_config else args.config
+    if config_path is None and not args.no_config:
+        p = default_config_path()
+        config_path = str(p) if p else None
+    roles = load_camera_roles(config_path)
+    if config_path:
+        print(f"[preview] Camera labels from: {config_path}")
+
+    found = describe_devices(roles)
     if not found:
         print("[preview] No RealSense devices found. Plug in a D435i and retry.")
         sys.exit(1)
@@ -142,11 +300,20 @@ def main():
             sys.exit(1)
         targets = [args.serial]
     elif args.all:
-        targets = found
+        targets = order_serials(found, roles)
     else:
-        targets = [found[0]]
+        targets = [order_serials(found, roles)[0]]
 
-    preview(targets, args.width, args.height, args.fps)
+    configured_missing = [s for s in roles if s not in found]
+    if configured_missing:
+        print(f"[preview] !! Configured camera(s) not detected: {configured_missing}")
+    print("[preview] Preview order:")
+    for i, s in enumerate(targets, 1):
+        print(f"  [{i}] {label_for(s, roles)}")
+
+    target_height = args.target_height if args.target_height > 0 else None
+    preview(targets, args.width, args.height, args.fps, roles,
+            target_height=target_height, snapshot_dir=args.snapshot_dir)
 
 
 if __name__ == "__main__":
