@@ -8,10 +8,10 @@ policy:
 
 # Language instruction. MUST match one of the strings the policy was trained on
 # (see datasets/open_3d_printer_diversified/meta/tasks.parquet).
-task: "take out the green wheel from the 3D printer"
+task: "open the 3D printer"
 
 robot:
-  ip: 169.254.175.10               # UR controller IP (set this!)
+  ip: null                         # UR controller IP (set this before live runs)
   gripper_port: 63352             # Robotiq URCap socket on the UR controller
   # ur_rtde servoJ tuning. Do not raise gain past ~600 without tuning.
   servoj:
@@ -23,27 +23,29 @@ robot:
 cameras:
   # Order matters: model expects cam_global + cam_wrist with these exact keys.
   - name: cam_global              # static external view of the workspace
-    serial: "405622074939"
+    serial: null                   # Set your RealSense serial before live runs
     width: 640
     height: 480
     fps: 30
     enable_depth: false           # Set true to also capture depth frames (model ignores)
 
   - name: cam_wrist               # mounted on the end-effector, moves with the arm
-    serial: "260522276066"
+    serial: null                   # Set your RealSense serial before live runs
     width: 640
     height: 480
     fps: 30
     enable_depth: false
 
 control:
-  hz: 30                          # must equal dataset fps (info.json says 30)
+  hz: 30                         # should match dataset fps
   max_seconds: 30                 # hard rollout cutoff (safety)
-  max_joint_delta_rad: 0.05       # per-step joint jump limit
+  max_joint_delta_rad: 0.15       # per-step joint jump limit (increased from 0.05 for pi05)
   clamp_mode: clip              # "refuse" = freeze on overshoot (safe default).
                                   # "clip"   = step max_joint_delta_rad toward target
                                   #            (low-pass filters noisy policy output;
                                   #            DIAGNOSTIC ONLY for undertrained models —
                                   #            arm will move smoothly but task likely fails)
+  smoothing_alpha: 0.3            # 1.0 = no smoothing, smaller = smoother but more lag
+  gripper_smoothing_alpha: 0.3    # same for gripper
   gripper_threshold: 0.5          # >this => closed; <=this => open. Binary because
                                   # the dataset's gripper is essentially open/closed.

@@ -1,417 +1,83 @@
-# VLA 训练 (pi0)
+# VLA LeRobot pi0 for UR7e and Pika
 
-在 LeRobot 格式数据集上微调与评估 Vision-Language-Action 模型。
-当前配置：在 `open_3d_printer_*` 数据集上训练 **pi0**。
+这是一个面向研究复现的 VLA 项目：在 LeRobot v3 数据集上微调、评估 **pi0**，并提供 UR7e 工位的数据采集和真机运行工具。
 
-> 英文版见 [README.md](README.md)。
+> English: [README.md](README.md)
 
-## 项目结构
+## 这个项目包含什么
 
-```
-VLA training/
-├── datasets/                          # LeRobot v3.0 数据集（输入）
-│   ├── open_3d_printer_diversified/   # 训练集
-│   └── open_3d_printer_test/          # 留出做评估
-├── collect/                           # 数据采集工具集（UR7e + Robotiq / Pika）
-│   ├── collect_urscript.py            # 模式 1 — URScript 回放采集
-│   ├── collect_pika.py                # 模式 2 — Pika 遥操作采集
-│   ├── preview_cameras.py             # D435i 取景预览
-│   └── README_CN.md                   # 完整采集指南（见下方 Step 0）
-├── scripts/
-│   ├── train_pi0.sh                   # 一行启动训练（bash）
-│   ├── train_pi0.py                   # Python 入口，--method=full|lora|frozen
-│   ├── eval_pi0.py                    # 在留出 lerobot 数据集上做离线评估
-│   ├── run_pi0_robot.py               # 真机闭环推理（UR + Robotiq + 双 RealSense）
-│   ├── preflight_check.py             # 真机跑前 5 秒硬件自检
-│   ├── compare_methods.py             # 对所有训过的方法做评估并出 csv 对比表
-│   └── compute_stats.py               # 缺失时计算 meta/stats.json
-├── configs/
-│   ├── pi0_3d_printer.json            # pi0 + 数据集特征映射（参考）
-│   └── run_pi0_robot.yaml             # 真机推理配置（§5 用）
-├── outputs/                           # 训练产物（已 gitignore）
-├── environment.yml                    # conda 环境（推荐）
-└── requirements.txt                   # 备选 pip 安装 — 已涵盖 collect/ 的依赖
-```
+- pi0 训练、评估和多方法对比脚本。
+- 基于 URScript 回放或 Pika 遥操作的 UR7e 数据采集工具。
+- 面向 UR + Robotiq + 双 RealSense 工位的真机闭环运行脚本。
+- 公开 GitHub 项目需要的复现说明、硬件检查清单和工程笔记。
 
-## 数据集格式检查
+这不是开箱即用的机器人产品。所有真机运行都需要你根据自己的硬件重新检查安全边界。
 
-`datasets/open_3d_printer_diversified/` 和 `datasets/open_3d_printer_test/` 均为
-**LeRobot v3.0** 格式，已确认：
-
-- ✅ `meta/info.json`，`codebase_version: v3.0`
-- ✅ `meta/tasks.parquet`、`meta/stats.json`、`meta/episodes/chunk-000/file-000.parquet`
-- ✅ `data/chunk-000/file-000.parquet`（多条 episode 打包在一个文件里）
-- ✅ `videos/observation.images.cam_global/chunk-000/file-000.mp4` 以及 `.../cam_wrist/...`
-- ✅ 特征：`observation.state`（7 维 = 6 关节 + 夹爪）、`action`（7 维）、两路 480×640×3 视频流（`cam_global`、`cam_wrist`）、任务语言字符串
-
-其他备注：
-- `robot_type` 是 `"ur7e"`（Universal Robots e-Series UR7e）。
-- 双相机：`cam_global`（全局工位视角） + `cam_wrist`（手腕末端视角）。
-- diversified 数据集共 110 个 episode / 48,756 帧，30 fps，2 个任务（开 / 关 3D 打印机）。
-
-## 环境安装（conda — 推荐）
+## 快速开始
 
 ```bash
 conda env create -f environment.yml
 conda activate vla-pi0
 ```
 
-会创建名为 `vla-pi0` 的环境，含 Python 3.10、PyTorch 2.4 + CUDA 12.1、ffmpeg，
-并通过 pip 安装 `lerobot[pi0]`（pi0 模型代码、transformers 等）。
-
-注意：
-- 环境文件锁定了 `pytorch-cuda=12.1`。如果你的 NVIDIA 驱动不支持 12.1，改成 `11.8`
-  之类，或者把 `pytorch` / `torchvision` / `pytorch-cuda` 三行删掉，然后单独
-  `pip install torch`。
-- CPU-only / 仅跑通流程：把上面那三行从 `environment.yml` 删掉，pip 会自动装 CPU
-  版 torch。
-- 想用纯 pip 也行：`python -m venv .venv && pip install -r requirements.txt`
-  （这种方式需要自己保证 ffmpeg 在 PATH 上）。
-
-实际训练需要 GPU（pi0 ~3B 参数；lerobot CLI 同时支持 LoRA 和全量微调）。
-
-## 0. 数据采集（可选 —— 只在你要自己录数据时看）
-
-已经有 `datasets/open_3d_printer_*/`？直接跳到 §1。
-
-要在 UR7e 工位上录新的演示数据（Robotiq URCap 或 Pika 遥操作 + 1–2 路 RealSense
-D435i），用 [collect/](collect/) 下面的工具：
+把默认 LeRobot v3 数据集放到 `datasets/open_3d_printer_diversified/`，然后训练：
 
 ```bash
-# URScript 回放 —— 同一份 .script 反复跑，每次加关节扰动
-python collect/collect_urscript.py \
-    --config collect/configs/urscript_config.yaml \
-    --dataset_name my_dataset \
-    --task "open the 3D printer" \
-    --urscript_file "collect/urscripts/open the 3D printer.script" \
-    --joint_jitter 0.01
-
-# Pika 遥操作
-python collect/collect_pika.py \
-    --config collect/configs/pika_config.yaml \
-    --dataset_name my_pika_demo \
-    --task "pour liquid into cup"
+python scripts/train_pi0.py --method=lora
 ```
 
-输出落到 `datasets/<dataset_name>/`，**直接就是 LeRobot v3.0** 格式，§2 的训练
-脚本可以直接读。硬件准备、相机 / 序列号查找、网络 & URCap 配置、扰动策略、
-Windows 排错全在 [collect/README_CN.md](collect/README_CN.md)
-（English: [collect/README.md](collect/README.md)）。
-
-另外，项目提供了一个轻量级的 Pika 遥操作界面用于手动控制与参数调试
-（不录数据）。你可以在仓库根目录执行脚本并指定配置，也可以先切到
-`collect/` 目录再运行：
-
-```bash
-# 在仓库根目录执行
-python collect/teleop_only.py --config collect/configs/pika_config.yaml
-
-# 或者先进入 collect/ 再运行
-cd collect
-python teleop_only.py --config configs/pika_config.yaml
-```
-
-`teleop_only.py` 使用项目中 vendored 的 Pika SDK 并复用了
-`collect_pika.py` 的遥操作逻辑，但不会写入采集文件。适合用于流程
-联调、基站稳定性检查和遥操作参数调试。每次移动或重新调试 Vive 基站后，
-先按 [Pika / Vive 基站调试后检查清单](docs/pika_lighthouse_checklist_cn.md)
-重新校准、同步配置并释放旧定位进程，再启动遥操作。
-
-
-## 1. 数据集格式
-
-当前 lerobot（包结构重构后）只读 **LeRobot v3.0** 数据集。每个数据集应是这样：
-
-```
-<dataset_root>/
-├── meta/
-│   ├── info.json                                # codebase_version: "v3.0"
-│   ├── tasks.parquet
-│   ├── stats.json
-│   └── episodes/chunk-000/file-000.parquet
-├── data/
-│   └── chunk-000/file-000.parquet               # 多条 episode 拼一个 parquet
-└── videos/
-    └── observation.images.<camera>/
-        └── chunk-000/file-000.mp4               # 多段 episode 视频拼接
-```
-
-与 v2.x 的关键差异：parquet / mp4 一个文件里**装多条 episode**（按累计文件
-大小切 chunk，默认每 chunk 1000 个 file），`tasks` 和 `episodes` 用 parquet
-不再用 jsonl，命名改为 `chunk-XXX/file-XXX`。
-
-### 直接采集新数据（推荐）
-
-用 lerobot 自带的录制工具，输出**直接就是 v3.0**：
-
-```bash
-lerobot-record --help
-```
-
-传入 `--dataset.root datasets/open_3d_printer_diversified` 加上你机器人 /
-遥操作 / 相机的相关参数。完整参数表见 `lerobot-record --help`。
-
-### 从 v2.0 转换（best effort）
-
-如果你只有 v2.0 文件，[scripts/convert_dataset_to_v30.py](scripts/convert_dataset_to_v30.py)
-会尝试做 v2.0 → v2.1 → v3.0 的原地转换。目前这条路还有毛刺
-（per-episode 图像统计缺 `count` 字段，脚本里改一行就行），
-更省事的还是直接按 v3.0 重新采集。
-
-## 2. 训练 pi0
-
-这里做的是**微调 (fine-tune)**：从 HF Hub 上的 `lerobot/pi0` 预训练权重开始，
-在 `open_3d_printer_diversified` 上接着训。**不**做从头训练（4570 帧远远不够）。
-通过 `--method` 提供三种范式。
-
-### 训练范式（SFT vs LoRA vs frozen）
-
-```
-                  (训练范式)
-        ┌─────────────────────────────┐
-        │                             │
-     预训练 (pretrain)             微调 (fine-tune)
-     从随机权重开始训                从已有权重继续训        ← 你现在在做的
-     pi0 由 PI 官方完成
-                                       │
-                              ┌────────┴────────┐
-                              │                 │
-                       全参数 SFT             参数高效微调
-                       (full SFT)            (PEFT, 比如 LoRA)
-                       所有 ~3B 参数           冻结基座，
-                       全部更新               训插入的低秩适配 (~1-5%)
-```
-
-- **SFT (Supervised Fine-Tuning)**：监督微调，用 (输入, 标签) 对让模型学映射。
-  这里 (观测+任务文本) → action 就是标准 SFT。下面三种方法**都属于 SFT**；
-  "SFT vs LoRA" 的对立是混淆 ——
-  **LoRA 也是 SFT，只是参数高效版本**。SFT 真正的对立面是 RLHF / DPO 这种 RL 训练。
-- **全参 SFT**：所有参数都吃梯度。上限最高，显存需求最高。
-- **LoRA SFT**：基座冻住，只训插入的低秩适配层。可训参数 ~1-5%，16-24G 显存可行，对小数据更稳。
-- **冻结视觉塔**：动作专家 + 语言塔做全参 SFT，视觉骨干冻住。是全参和 LoRA 的折中。
-
-### 三种模式（`--method`）
-
-| 方法 | 命令 | 输出目录 | 备注 |
-|---|---|---|---|
-| 全参 SFT（默认） | `python scripts/train_pi0.py` | `outputs/train/pi0_3d_printer_full/` | 所有参数都训。显存需求最高。 |
-| LoRA | `python scripts/train_pi0.py --method=lora` | `outputs/train/pi0_3d_printer_lora/` | 只训适配层。默认 bf16，更高 LR (1e-4)。 |
-| 冻结视觉 | `python scripts/train_pi0.py --method=frozen` | `outputs/train/pi0_3d_printer_frozen/` | 视觉塔冻住，其余可训。 |
-
-各方法的默认值（steps / batch size / lr）写在
-[`scripts/train_pi0.py`](scripts/train_pi0.py) 里；任意额外参数都会原样转给 lerobot 的 train CLI：
-
-```bash
-python scripts/train_pi0.py --method=lora --steps=10000 --batch_size=2 --wandb.enable=true
-```
-
-bash 包装（Linux/Mac）支持把 method 作为第一个位置参数：
-
-```bash
-bash scripts/train_pi0.sh           # full
-bash scripts/train_pi0.sh lora
-bash scripts/train_pi0.sh frozen --steps=10000
-```
-
-### 数据量小时（4570 帧）的建议
-
-数据集偏小，全参 SFT 容易过拟合。建议按这个顺序：
-
-1. 先跑 `--method=lora`（便宜、快、稳，做基线）。
-2. 跑 `--method=frozen`（容量比 LoRA 大一些，但不到全参）。
-3. 如果你有 40G+ 显卡，再上 `--method=full` 推上限。
-4. 用 `python scripts/compare_methods.py` 对比（见 §4）。
-
-### 训练超参一览（怎么"约束"一次训练）
-
-LeRobot 训的是 **逐帧采样**（不是按 episode 一整条训），所以传统意义上的 "epoch / episode" 这种概念在这里要换一下视角。下面把常见参数串一遍：
-
-| 概念 | CLI 参数 | 含义 |
-|---|---|---|
-| **训练步数** | `--steps=30000` | 总共做多少次梯度更新（"一步" = 处理一个 batch + backward + optimizer.step）。pi0 微调一般 20k–100k 步起步。 |
-| **batch size** | `--batch_size=8` | 每步从数据集里随机抽多少帧。显存不够先降这个。**多卡时是单卡 batch**，全局 batch = `num_processes × batch_size`。 |
-| **梯度累积** | `--gradient_accumulation_steps=4` | 每隔 N 个小 batch 才真正 `optimizer.step()` 一次。等效全局 batch = `batch_size × N`。显存吃紧但想要大 batch 时用。 |
-| **学习率** | `--optimizer.lr=2.5e-5` | pi0 微调建议 1e-5 到 5e-5；从头训才会上 1e-4 量级。 |
-| **学习率调度** | `--scheduler.type=cosine_decay` 等 | 是否做 warmup / decay。lerobot 默认通常带 warmup，可关。 |
-| **优化器** | `--optimizer.type=adamw` | 默认 AdamW；需要时可换。 |
-| **数据加载并发** | `--num_workers=4` | DataLoader 用几个子进程读数据 + 解码视频。GPU 利用率上不去时把这个调高（8–12）。 |
-| **存盘频率** | `--save_freq=5000` | 每 N 步存一次 checkpoint 到 `outputs/.../checkpoints/`。 |
-| **日志频率** | `--log_freq=100` | 每 N 步打一次 loss / 学习率 / 速度等指标。 |
-| **device** | `--policy.device=cuda` | 默认自动检测；多卡走 `accelerate launch` 而不是改这个。 |
-| **混合精度** | `--policy.dtype=bfloat16` | 省一半显存，几乎无精度损失，30 系/40 系/A100/H100 都支持。 |
-| **随机种子** | `--seed=1000` | 复现实验。 |
-| **断点续训** | `--resume=true` | 从 `output_dir` 里最新的 checkpoint 继续训。 |
-
-### "episode / epoch" 在 lerobot 里怎么对应
-
-- 数据集里 1 个 **episode** = 一次完整的演示轨迹（这里 526、515、… 帧不等），共 12 条，总 4570 帧。
-- 训练时 **不**按 episode 走，而是把所有 episode 拼成一个帧池，每步从中随机采 `batch_size` 帧（pi0 还会基于该帧向前取 `chunk_size` 帧的动作作为标签）。
-- 所以 "训练了几个 epoch" 这种说法要换算：
-  ```
-  effective_epochs ≈ steps × batch_size / total_frames
-                   = 30000 × 8 / 4570
-                   ≈ 52.5  个 epoch
-  ```
-- 想"训 10 个 epoch"就反算：`steps = 10 × 4570 / 8 ≈ 5712`，写成 `--steps=5712`。
-
-### pi0 特有的几个参数
-
-| 参数 | 含义 |
-|---|---|
-| `--policy.chunk_size=50` | 一次预测的动作序列长度（pi0 的 action chunk）。30Hz 数据下 50 步 ≈ 1.66 秒。 |
-| `--policy.n_action_steps=50` | 推理时实际执行 chunk 中的前几步（一般 = chunk_size，或更小做 receding-horizon）。 |
-| `--policy.n_obs_steps=1` | 观测堆几帧；pi0 常用 1。 |
-| `--policy.use_lora=true` | LoRA 微调，显存大降。 |
-| `--policy.freeze_vision_encoder=true` | 冻结视觉塔，只训动作专家头。 |
-| `--policy.pretrained_path=lerobot/pi0` | 起点权重，可换成你自己的 checkpoint 路径。 |
-
-### 想"只用部分 episode 训"怎么办
-
-LeRobot 的 dataset 配置可以传 `--dataset.episodes='[0,1,2,3,4,5,6,7]'` 这种列表来挑 episode（具体语法以 `--help` 为准；老版本是 `--dataset.episodes=0,1,2,3`）。这样可以：
-
-- 留 2 条 episode 做内部验证
-- 调试时只用 1–2 条快速跑通流水线
-
-### 一个典型组合（24G 显存单卡，调试用）
-
-```bash
-python scripts/train_pi0.py `
-    --steps=2000 `
-    --batch_size=2 `
-    --gradient_accumulation_steps=4 `
-    --policy.dtype=bfloat16 `
-    --policy.use_lora=true `
-    --num_workers=8 `
-    --save_freq=500 `
-    --log_freq=20
-```
-
-跑完确认 loss 在降、checkpoint 能存、显存没炸，再放开正式训练。
-
-## 3. 单次运行评估
-
-在留出的 `open_3d_printer_test` 数据集上做离线（open-loop）动作预测评估：
+评估训练好的 checkpoint：
 
 ```bash
 python scripts/eval_pi0.py \
-    --policy-path outputs/train/pi0_3d_printer_full/checkpoints/last/pretrained_model \
-    --dataset-root datasets/open_3d_printer_test
+  --dataset-root datasets/open_3d_printer_diversified \
+  --policy-path outputs/train/pi0_3d_printer_lora/checkpoints/005000/pretrained_model
 ```
 
-输出：每一维 action 的 MAE / MSE 汇总，以及若干 episode 的 GT vs. 预测动作对比图，
-都写到 `outputs/eval/` 下。
-
-如果要在真机上做闭环推理，见下文 §5。
-
-## 4. 对比多种方法
-
-训完 `full / lora / frozen` 中两种或更多之后跑：
+真机运行前先改 `configs/run_pi0_robot.yaml`，做硬件预检，并从 `--dry-run` 开始：
 
 ```bash
-python scripts/compare_methods.py
+python scripts/preflight_check.py --config configs/run_pi0_robot.yaml
+python scripts/run_pi0_robot.py --config configs/run_pi0_robot.yaml --dry-run
 ```
 
-脚本会自动在 `outputs/train/` 下找每个方法的 `last` checkpoint，对每个跑一次
-[scripts/eval_pi0.py](scripts/eval_pi0.py)（如果已经有 `summary.json` 就跳过 ——
-加 `--force` 强制重跑），然后产出：
+## 文档入口
 
-- `outputs/eval/comparison.csv` —— 完整数值结果
-- `outputs/eval/comparison.png` —— **对比图**（左边整体 MAE/MSE，右边逐维 MAE）
-- 终端打印一张文本表：
+- [文档索引](docs/README_CN.md)
+- [数据采集指南](docs/guides/data_collection_cn.md)
+- [控制流程指南](docs/control_cn.md)
+- [Pika / Vive 基站检查清单](docs/pika_lighthouse_checklist_cn.md)
+- [训练专用 bundle 说明](pi0_training_bundle/README_TRAINING_CN.md)
 
-```
-   method |    n_eps |  n_frames |       mae |       mse |   mae[0] | ...
----------+----------+-----------+-----------+-----------+----------+-----
-     full |       12 |      4570 |   0.01234 |   0.00056 |   0.0089 | ...
-     lora |       12 |      4570 |   0.01510 |   0.00072 |   0.0102 | ...
-   frozen |       12 |      4570 |   0.01345 |   0.00061 |   0.0095 | ...
-```
+英文文档入口见 [docs/README.md](docs/README.md)。
 
-只对部分方法对比：`--methods full lora`；
-正式训练完后用 `--force` 重新评估。
+## 项目结构
 
-## 5. 真机闭环推理
-
-UR + Robotiq 2F-85/140 + 双 Intel RealSense 的部署流程。所有硬件参数集中在
-[configs/run_pi0_robot.yaml](configs/run_pi0_robot.yaml)；
-[scripts/run_pi0_robot.py](scripts/run_pi0_robot.py) 默认从这里读。
-
-策略输出怎么一路变成关节角和夹爪指令（servoJ + RTDE、Robotiq URCap socket、
-安全闸刀、`servoJ time` 匹配实测周期），完整解释见
-[docs/control_cn.md](docs/control_cn.md)。
-
-### Step 0 — 装运行时依赖
-
-```bash
-pip install ur_rtde pyrealsense2 pyyaml
+```text
+collect/              UR7e 数据采集和遥操作工具
+configs/              公开示例配置和运行配置
+datasets/             本地 LeRobot 数据集；大文件默认忽略
+docs/                 指南、检查清单和工程笔记
+outputs/              本地训练/评估输出；默认忽略
+pi0_training_bundle/  可选的训练专用 bundle 脚手架
+scripts/              训练、评估、预检和真机运行脚本
 ```
 
-### Step 1 — 填 config
+`collect/pika_sdk/` 是来自松灵/Pika 的第三方 SDK，本项目只调用它，不重新授权或重写其内容。详情见 [NOTICE.md](NOTICE.md)。
 
-打开 [configs/run_pi0_robot.yaml](configs/run_pi0_robot.yaml)，至少改：
+## 数据和权重
 
-- `robot.ip` —— UR 控制器的 IP（占位值会被 preflight 拦下）。
-- `cameras[*].serial` —— 两个 RealSense 的 serial number。可以这样查：
-  `python -c "import pyrealsense2 as rs; print([d.get_info(rs.camera_info.serial_number) for d in rs.context().devices])"`。
-  顺序很重要：`cam_global` = 全局工位视角，`cam_wrist` = 末端手腕视角。
+完整数据集、模型权重、Hugging Face cache、训练输出、zip 和 tar 包都不进入 Git。可以保留小型的 `meta/info.json` 作为数据结构示例；完整数据集和 checkpoint 请通过单独渠道发布。
 
-其他参数（`control.max_seconds`、`control.max_joint_delta_rad`、`robot.servoj.gain` 等）
-都有合理默认值，先别动。
+## 真机安全提示
 
-### Step 2 — UR 示教器准备（每次开机做一遍）
+当前硬件流程默认面向 UR7e、Robotiq 或 Pika 夹爪、Intel RealSense，以及可选的 Vive lighthouse 定位。每次真机运行前：
 
-- **Remote Control 模式打开**（示教器右上角下拉框）—— 否则 RTDE `servoJ`
-  拒绝接管。
-- 加载并**运行**一个含 **Robotiq 工具栏**的程序。这一步才会让控制柜里
-  的 63352 端口对外开放；不跑程序的话夹爪 socket 连不上。
-- 速度旋钮拨到 **20–30%**（首次必做）。
-- E-stop 在手边，工位除了 3D 打印机之外清空。
-- 手动把机械臂移到接近训练数据起始位姿的地方（策略对初始姿态敏感）。
+- 检查配置里的机器人 IP、相机序列号和夹爪端口。
+- 先运行 `scripts/preflight_check.py`。
+- 把示教器速度滑块放到保守范围。
+- 保持急停按钮在手边。
 
-### Step 3 — preflight 连通性检查（真机跑前必做）
+## License
 
-```bash
-python scripts/preflight_check.py
-```
-
-依次验证：UR TCP 通 → RTDE 握手 → Robotiq URCap socket 应答 → 两个
-RealSense serial 都在 → 各取一帧 RGB 成功。任何一步失败都会非零退出
-并打印修复提示。整个过程约 5 秒。
-
-如果机械臂还没上线，只想先验相机：
-`python scripts/preflight_check.py --skip-robot`。
-
-### Step 4 — Dry-run（模型 + 相机 + 时序，不动机械臂）
-
-```bash
-python scripts/run_pi0_robot.py --dry-run --max-seconds 5
-```
-
-每秒打印一次预测的关节目标。重点看：
-- `⚠ control loop slow` 告警 —— 经常出现说明 GPU/USB 撑不住 30Hz。
-- 关节值在 ±π 弧度内、夹爪在 [0, 1] 区间；否则数据/模型预处理对不上。
-
-### Step 5 — 真机闭环，先短跑
-
-```bash
-python scripts/run_pi0_robot.py --task "open the 3D printer" --max-seconds 15
-```
-
-`--max-seconds` 是硬截断（也可以写在 config 的 `control.max_seconds`）。
-脚本里有逐步关节跳变限幅（默认 0.10 rad ≈ 5.7°），跳变超限会拒绝下发、
-保持上一帧目标。如果机械臂卡住或抖，看 `MAX_JOINT_DELTA_RAD` 告警决定
-要不要放宽。
-
-跑 close 任务：
-```bash
-python scripts/run_pi0_robot.py --task "close the 3D printer" --max-seconds 15
-```
-
-`--task` 字符串必须和 `datasets/open_3d_printer_diversified/meta/tasks.parquet`
-里的字符串**一字不差**——策略是按这些原文 condition 训出来的。
-
-### CLI 覆盖任何 config 字段
-
-每个 config 字段都有对应 CLI（`--robot-ip` / `--cam-global-serial` /
-`--device` / `--gripper-port` / `--max-seconds` / `--task`），优先级
-**CLI > config > 默认值**。要切换不同机台用 `--config path/to/other.yaml`。
+本项目代码和文档使用 [MIT License](LICENSE)。第三方组件遵循它们各自的来源和许可；Pika SDK 仍由原来源许可约束。

@@ -104,10 +104,28 @@ class RobotiqGripper:
     def read_position(self) -> float:
         return self.get_position()
 
-    def write_position(self, value: float) -> None:
+    def write_position(
+        self,
+        value: float,
+        speed: Optional[int] = None,
+        force: Optional[int] = None,
+    ) -> None:
         """Send a normalised position in [0, 1]: 0=open, 1=closed."""
         raw = int(round(max(0.0, min(1.0, float(value))) * 255))
-        self.move(raw)
+        self.move(
+            raw,
+            speed=200 if speed is None else speed,
+            force=150 if force is None else force,
+        )
+
+    def is_alive(self) -> bool:
+        if self._sock is None:
+            return False
+        try:
+            resp = self._send(b"GET STA\n")
+            return bool(resp)
+        except Exception:
+            return False
 
     def disconnect(self):
         if self._sock:

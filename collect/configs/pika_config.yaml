@@ -5,7 +5,7 @@
 # ============================================================
 
 robot:
-  host: "169.254.175.10"      # UR7e controller IP (PolyScope X — Realtime port 30003)
+  host: ""                    # UR7e controller IP (set this before live runs)
   frequency: 500.0
 
 # ----------------------- Pika Sense (tracker + trigger + encoder)
@@ -30,7 +30,7 @@ pika_gripper:
 cameras:
   - name: cam_global
     type: realsense           # MultiCamera handles this
-    serial: "405622074939"    # D435i serial
+    serial: ""                # D435i serial
     width: 640
     height: 480
     fps: 30
@@ -39,7 +39,7 @@ cameras:
   - name: cam_wrist
     type: pika_wrist          # routed through PikaGripper
     kind: realsense           # "realsense" | "fisheye"
-    serial: "260522276066"    # D405 serial; empty = first found
+    serial: ""                # D405 serial; empty = first found
     width: 640
     height: 480
     fps: 30
@@ -202,7 +202,7 @@ teleoperation:
 collection:
   fps: 30                      # frames per second written to the dataset
   output_dir: "datasets"
-  dataset_name: "ur7e_pika_demo"
+  dataset_name: "PickTask"
   require_engaged_before_record: true
   record_start_settle_s: 0.5
 
@@ -220,4 +220,5 @@ preview:
   #   540  → medium, ~1920×540
   #   720  → large, ~2560×720    ← default (good on 1440p+ displays)
   #   900  → very large, ~3200×900 (only on 4K monitors)
-  height: 720
+  height: 540 
+  

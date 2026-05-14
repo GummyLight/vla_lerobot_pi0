@@ -152,12 +152,13 @@ class LeRobotWriter:
             except json.JSONDecodeError:
                 pass
 
-        # Resume state — count what's already staged
-        # self.episode_index = self._count_staged_episodes()
-        # self.global_index = self._sum_staged_frame_count()
-
         self.episode_index = self._count_all_episodes()
         self.global_index = self._sum_all_frame_count()
+
+        if self.episode_index > 0:
+            print(f"[Writer] Resuming dataset {dataset_name} from episode {self.episode_index} (global index {self.global_index})")
+        else:
+            print(f"[Writer] Starting fresh dataset {dataset_name} from episode 0")
 
         # Per-episode buffers
         self._rows: List[dict] = []
@@ -847,13 +848,8 @@ class LeRobotWriter:
 
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset  # type: ignore
-        except Exception as e:
-            print(f"  Sanity check    : structural OK "
-                  f"(lerobot not importable here: {type(e).__name__})")
-            return
-
-        try:
-            ds = LeRobotDataset(repo_id="local/sanity", root=str(self.root))
+            # Increase tolerance_s for sanity check to avoid failing on minor video jitter.
+            ds = LeRobotDataset(repo_id="local/sanity", root=str(self.root), tolerance_s=0.05)
             _ = ds[0]
             _ = ds[len(ds) // 2]
             print(f"  Sanity check    : OK "

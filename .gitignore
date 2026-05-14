@@ -15,7 +15,14 @@ wandb/
 *.ckpt
 *.safetensors
 *.pt
+*.pth
 *.bin
+*.onnx
+*.gguf
+*.h5
+*.hdf5
+checkpoints/
+**/checkpoints/
 
 # HuggingFace cache (pi0 base weights, downloaded models, ~14GB)
 .hf_cache/
@@ -23,6 +30,19 @@ wandb/
 
 # Datasets: keep folder structure visible (.gitkeep) but skip the heavy bits.
 # data/ has parquet shards (hundreds of MB), videos/ has mp4 shards (GB)
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.parquet
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.npy
+*.npz
+*.pkl
+*.pickle
 datasets/*/data/**
 datasets/*/videos/**
 datasets/*/_staging/
@@ -70,6 +90,10 @@ env/
 *credentials*
 **/HF_TOKEN
 **/.hf_token
+configs/robot_hardware.json
+collect/configs/pika_robotiq_config.yaml
+*.local.yaml
+*.local.json
 
 # ============================================================================
 # Editor / OS / Claude Code internals
@@ -87,3 +111,8 @@ Thumbs.db
 # ============================================================================
 *.log
 *.tmp
+WARNING:
+Info:
+ENGAGED
+collect/Info:
+collect/ENGAGED

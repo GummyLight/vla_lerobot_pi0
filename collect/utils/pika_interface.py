@@ -338,6 +338,26 @@ class PikaGripper:
         except Exception as e:
             logger.debug(f"[PikaGripper] set_motor_angle error: {e}")
 
+    def read_position(self) -> float:
+        """Normalized position in [0, 1] for compatibility with Robotiq.
+        Pika: 0.0 (Closed) to ~1.2 (Open).
+        Robotiq: 1.0 (Closed) to 0.0 (Open).
+        We return (1.0 - normalized_pika_rad).
+        """
+        rad = self.get_motor_position()
+        # Assume 1.2 rad is fully open.
+        return max(0.0, min(1.0, 1.0 - (rad / 1.2)))
+
+    def write_position(self, value: float) -> None:
+        """Send a normalized position in [0, 1]: 1=closed, 0=open.
+        Maps to Pika: 0.0 rad (closed), 1.2 rad (open).
+        """
+        value = max(0.0, min(1.0, float(value)))
+        # 1.0 (closed) -> 0.0 rad
+        # 0.0 (open) -> 1.2 rad
+        rad = (1.0 - value) * 1.2
+        self.set_motor_angle(rad)
+
     def get_motor_position(self) -> float:
         """Return the current motor position in radians (0 = fully open).
 

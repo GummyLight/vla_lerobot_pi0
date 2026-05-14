@@ -102,39 +102,118 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_policy_with_lora(adapter_dir: Path, device: str):
-    """Load base pi0 from the adapter's `base_model_name_or_path`, wrap with PEFT.
-
-    The base pi0 snapshot's `config.json` was written by an older lerobot and
-    has fields the current PI0Config rejects (`resize_imgs_with_padding`,
-    `proj_width`, ...). We dodge that by loading the policy config from the
-    LoRA checkpoint dir instead — that one was written by the current lerobot
-    during training and is forward-compatible.
+    """Load policy from the given directory (supports both LoRA and Full parameter models).
     """
-    from peft import PeftConfig, PeftModel
-    from lerobot.policies.pi0.modeling_pi0 import PI0Policy
-    from lerobot.configs.policies import PreTrainedConfig
+    from safetensors.torch import load_file
+    import draccus
 
-    peft_cfg = PeftConfig.from_pretrained(str(adapter_dir))
-    base_path = peft_cfg.base_model_name_or_path
-    if not base_path:
-        raise RuntimeError(
-            f"adapter_config.json at {adapter_dir} has no base_model_name_or_path; "
-            "can't locate the frozen pi0 base."
-        )
-    policy_cfg = PreTrainedConfig.from_pretrained(str(adapter_dir))
-    print(f"loading base pi0 from: {base_path}")
-    base = PI0Policy.from_pretrained(base_path, config=policy_cfg)
-    print(f"wrapping with LoRA adapter from: {adapter_dir}")
-    policy = PeftModel.from_pretrained(base, str(adapter_dir), config=peft_cfg)
+    config_path = adapter_dir / "config.json"
+    with open(config_path, "r") as f:
+        config_data = json.load(f)
+
+    policy_type = config_data.get("type")
+    config_data_copy = dict(config_data)
+    config_data_copy.pop("type", None)
+
+    if policy_type == "pi05":
+        from lerobot.policies.pi05.configuration_pi05 import PI05Config
+
+        policy_cfg = draccus.decode(PI05Config, config_data_copy)
+        policy_cfg.pretrained_path = adapter_dir
+        policy_cfg.device = device
+        if device.startswith("cuda"):
+            if hasattr(policy_cfg, "dtype") and str(getattr(policy_cfg, "dtype", "")).lower() in ("float32", "fp32"):
+                policy_cfg.dtype = "bfloat16" if torch.cuda.is_bf16_supported() else "float16"
+            if hasattr(policy_cfg, "use_amp"):
+                policy_cfg.use_amp = True
+        if "compile_model" in config_data:
+            policy_cfg.compile_model = bool(config_data["compile_model"])
+        if "compile_mode" in config_data:
+            policy_cfg.compile_mode = config_data["compile_mode"]
+        from lerobot.policies.pi05.modeling_pi05 import PI05Policy
+
+        policy_cls = PI05Policy
+        print("Detected Pi0.5 architecture")
+    elif policy_type == "pi0":
+        from lerobot.policies.pi0.configuration_pi0 import PI0Config
+        from lerobot.policies.pi0.modeling_pi0 import PI0Policy
+
+        policy_cfg = draccus.decode(PI0Config, config_data_copy)
+        policy_cfg.pretrained_path = adapter_dir
+        policy_cfg.device = device
+        if device.startswith("cuda"):
+            if hasattr(policy_cfg, "dtype") and str(getattr(policy_cfg, "dtype", "")).lower() in ("float32", "fp32"):
+                policy_cfg.dtype = "bfloat16" if torch.cuda.is_bf16_supported() else "float16"
+            if hasattr(policy_cfg, "use_amp"):
+                policy_cfg.use_amp = True
+        policy_cls = PI0Policy
+        print("Detected Pi0 architecture")
+    else:
+        raise ValueError(f"Unsupported policy type {policy_type!r} in {config_path}")
+
+    # 2. Check if it's a LoRA or Full parameter model
+    adapter_config_path = adapter_dir / "adapter_config.json"
+    if adapter_config_path.exists():
+        print(f"LoRA adapter detected at: {adapter_dir}")
+        from peft import PeftConfig, PeftModel
+        peft_cfg = PeftConfig.from_pretrained(str(adapter_dir))
+        base_path = peft_cfg.base_model_name_or_path
+        
+        base = policy_cls(policy_cfg)
+        # Load and fix base weights (handling vision tower naming mismatch)
+        state_dict_path = Path(base_path) / "model.safetensors"
+        if not state_dict_path.exists():
+             state_dict_path = list(Path(base_path).glob("**/model.safetensors"))[0]
+        
+        sd = load_file(str(state_dict_path), device="cpu")
+        fixed_sd = {k.replace(".vision_tower.vision_model.", ".vision_tower."): v for k, v in sd.items()}
+        base.load_state_dict(fixed_sd, strict=False)
+        
+        policy = PeftModel.from_pretrained(base, str(adapter_dir), config=peft_cfg)
+    else:
+        print(f"Full parameter model detected, loading from: {adapter_dir}")
+        # For full fine-tuned models, weights are already in adapter_dir
+        policy = policy_cls(policy_cfg)
+        state_dict_path = adapter_dir / "model.safetensors"
+        sd = load_file(str(state_dict_path), device="cpu")
+        # Still apply the vision tower fix just in case of different lerobot versions
+        fixed_sd = {k.replace(".vision_tower.vision_model.", ".vision_tower."): v for k, v in sd.items()}
+        msg = policy.load_state_dict(fixed_sd, strict=False)
+        print(f"Full model load result: {msg}")
+
     policy.to(device).eval()
     return policy
 
 
-def load_processors(adapter_dir: Path):
-    from lerobot.configs.policies import PreTrainedConfig
+def load_processors(adapter_dir: Path, device: str | None = None):
     from lerobot.policies.factory import make_pre_post_processors
+    import draccus
 
-    policy_cfg = PreTrainedConfig.from_pretrained(str(adapter_dir))
+    config_path = adapter_dir / "config.json"
+    with open(config_path, "r") as f:
+        config_data = json.load(f)
+
+    policy_type = config_data.get("type")
+    config_data_copy = dict(config_data)
+    config_data_copy.pop("type", None)
+
+    if policy_type == "pi05":
+        from lerobot.policies.pi05.configuration_pi05 import PI05Config
+
+        policy_cfg = draccus.decode(PI05Config, config_data_copy)
+        policy_cfg.pretrained_path = adapter_dir
+        if device is not None:
+            policy_cfg.device = device
+    elif policy_type == "pi0":
+        from lerobot.policies.pi0.configuration_pi0 import PI0Config
+
+        policy_cfg = draccus.decode(PI0Config, config_data_copy)
+        policy_cfg.pretrained_path = adapter_dir
+        if device is not None:
+            policy_cfg.device = device
+    else:
+        raise ValueError(f"Unsupported policy type {policy_type!r} in {config_path}")
+
     pre, post = make_pre_post_processors(policy_cfg, pretrained_path=str(adapter_dir))
     return pre, post
 

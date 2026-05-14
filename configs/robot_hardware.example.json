@@ -1,6 +1,6 @@
 {
   "robot": {
-    "ip": "192.168.1.100",
+    "ip": null,
     "type": "ur7e",
     "notes": "UR controller IP address. Set --robot-ip to override."
   },

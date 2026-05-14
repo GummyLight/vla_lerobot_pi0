@@ -1,0 +1,14 @@
+datasets/*
+!datasets/README.md
+
+models/*
+!models/README.md
+
+hf_cache/*
+!hf_cache/README.md
+
+outputs/*
+!outputs/.gitkeep
+
+__pycache__/
+*.pyc

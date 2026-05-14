@@ -87,14 +87,15 @@ def ensure_pi0_weights() -> Path:
     return local_dir
 
 
-def build_args(method: str) -> tuple[list[str], Path]:
+def build_args(method: str, policy_type: str = "pi0") -> tuple[list[str], Path]:
     cfg = METHODS[method]
     output_dir = REPO_ROOT / "outputs" / "train" / f"pi0_3d_printer_{method}"
     pi0_path = ensure_pi0_weights()
 
     base = [
         # policy
-        "--policy.type=pi0",
+        f"--policy.type={policy_type}",
+        f"--policy.discover_packages_path=lerobot.policies.{policy_type}",
         f"--policy.pretrained_path={pi0_path}",
         "--policy.push_to_hub=false",
         "--policy.chunk_size=50",
@@ -142,7 +143,15 @@ def main() -> int:
         os.environ.setdefault("HF_HOME", r"D:\.hfcache")
     else:
         os.environ.setdefault("HF_HOME", str(REPO_ROOT / ".hf_cache"))
-    args, output_dir = build_args(known.method)
+    # Detect policy type from passthrough or default to pi0
+    policy_type = "pi0"
+    for i, arg in enumerate(passthrough):
+        if arg.startswith("--policy.type="):
+            policy_type = arg.split("=", 1)[1]
+        elif arg == "--policy.type" and i + 1 < len(passthrough):
+            policy_type = passthrough[i+1]
+
+    args, output_dir = build_args(known.method, policy_type=policy_type)
     # lerobot refuses to start if output_dir exists and resume=false. If the
     # directory is empty (e.g. left behind by a prior crash), remove it; if it
     # has real artifacts, bail out so the user can decide.

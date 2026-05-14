@@ -248,6 +248,6 @@ safe IK + servo commands
 
 ## 参考
 
-- [IK 模式详细对比](IK_MODES_COMPARISON.md)
-- [UR7e 底座偏置陷阱分析](ik_bias_demo.py)
+- [IK 模式详细对比](ik_modes_comparison_cn.md)
+- [UR7e 底座偏置陷阱分析](../../collect/ik_bias_demo.py)
 - UR RealTime Data Exchange (RTDE) 文档

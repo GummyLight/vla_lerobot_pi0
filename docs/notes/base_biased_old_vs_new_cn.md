@@ -186,7 +186,7 @@ if q_target is None and mode == "adaptive":
 
 ## 技术细节参考
 
-- [完整改进说明](ADAPTIVE_IK_IMPROVEMENTS.md)  
-- [快速开始](QUICK_START_ADAPTIVE_IK.md)
-- [IK模式对比](IK_MODES_COMPARISON.md)  
-- [数值验证脚本](ik_bias_demo.py)
+- [完整改进说明](adaptive_ik_improvements_cn.md)
+- [快速开始](adaptive_ik_quick_start_cn.md)
+- [IK模式对比](ik_modes_comparison_cn.md)
+- [数值验证脚本](../../collect/ik_bias_demo.py)

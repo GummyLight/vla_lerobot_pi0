@@ -331,30 +331,36 @@ class Gripper:
             logger.error("设备未连接，无法设置电机弧度")
             return False
         
-        # 确保角度非负
-        if rad < 0:
-            rad = 0
+        rad = float(rad)
+        if rad < 0.0:
+            rad = 0.0
             logger.warning("电机弧度不能为负值，已设置为0")
-        
-        # 如果电流值在 -600 之上，就正常控制
-        if self.motor_data['Current'] > -600:
-            self.rad = rad
-            self.serial_comm.send_command(CommandType.POSITION_CTRL, rad)
-        
-        # 如果瞬时电流超过 -2300，则缓慢张开夹爪
-        elif self.motor_data['Current'] < -2300:
-            self.rad += 0.05 
-            print("当前电机弧度:", self.rad)
-            self.serial_comm.send_command(CommandType.POSITION_CTRL, self.rad)
-        
-        # 如果电流值在 -10000 之下，就跳出 error
-        elif self.motor_data['Current'] < -10000:
-           logger.error("电机已过流，启动保护措施，请检查gripper电机状态，如亮红灯则需断电重启")
 
-        # 夹爪正常张开
-        else:
-            if rad > self.rad:
-                self.serial_comm.send_command(CommandType.POSITION_CTRL, rad)
+        if self.rad is None:
+            try:
+                self.rad = float(self.motor_data.get('Position', 0.0))
+            except Exception:
+                self.rad = 0.0
+
+        current = int(self.motor_data.get('Current', 0))
+
+        if current < -10000:
+            logger.error("电机已过流，启动保护措施，请检查gripper电机状态，如亮红灯则需断电重启")
+            return False
+
+        if current < -2300:
+            self.rad = float(self.rad) + 0.05
+            print("当前电机弧度:", self.rad)
+            return self.serial_comm.send_command(CommandType.POSITION_CTRL, float(self.rad))
+
+        if current > -600:
+            self.rad = rad
+            return self.serial_comm.send_command(CommandType.POSITION_CTRL, float(rad))
+
+        if rad > float(self.rad):
+            self.rad = rad
+            return self.serial_comm.send_command(CommandType.POSITION_CTRL, float(rad))
+        return True
         
     # def set_motor_angle(self, rad):
     #     """
@@ -566,4 +572,3 @@ class Gripper:
         析构函数，确保资源被正确释放
         """
         self.disconnect()
-

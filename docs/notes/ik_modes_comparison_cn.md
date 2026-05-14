@@ -199,6 +199,6 @@ joint_limits:
 
 ## 进一步阅读
 
-- [PikaTeleopController 完整实现](collect/collect_pika.py#L80)
-- [IK 求解细节](collect/utils/robot_interface.py#L258)
-- [安全过滤三层防御](collect/collect_pika.py#L350)
+- [PikaTeleopController 完整实现](../../collect/collect_pika.py#L80)
+- [IK 求解细节](../../collect/utils/robot_interface.py#L258)
+- [安全过滤三层防御](../../collect/collect_pika.py#L350)

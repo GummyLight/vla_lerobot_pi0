@@ -25,7 +25,7 @@
 
 ```bash
 # 1. 进入项目目录
-cd /home/changjinli/02-Master/01-PrelearningYear/vla_lerobot_pi0
+cd <repo-root>
 
 # 2. 启动遥操作（自动读取新配置）
 python collect/teleop_only.py --config collect/configs/pika_config.yaml
@@ -97,7 +97,7 @@ teleoperation:
 
 ## 详细配置说明
 
-见 [ADAPTIVE_IK_IMPROVEMENTS.md](ADAPTIVE_IK_IMPROVEMENTS.md)
+见 [adaptive_ik_improvements_cn.md](adaptive_ik_improvements_cn.md)
 
 ---
 
@@ -117,7 +117,7 @@ A: 逐步尝试：
 **Q: 怎么知道自碰撞的真实极限？**  
 A: 使用 probe_joint_limits.py：
 ```bash
-python collect/tools/probe_joint_limits.py --robot-config collect/configs/robot_hardware.json
+python collect/tools/probe_joint_limits.py --robot-config configs/robot_hardware.example.json
 ```
 然后在 pika_config.yaml 中设置 joint_limits。
 
@@ -128,4 +128,3 @@ python collect/tools/probe_joint_limits.py --robot-config collect/configs/robot_
 1. **路由日志**：查看 `/tmp/pika_teleop_*.log` 中 IK 失败的频率
 2. **调整EMA系数**：在 collect_pika.py 中改 `0.3 * d_raw + 0.7 * last_bias` 的系数
 3. **混合IK**：实现基于TCP运动幅度的自动模式切换
-

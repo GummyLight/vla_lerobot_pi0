@@ -5,7 +5,7 @@
 ### ✅ 已完成
 
 #### 1. 配置文件修改
-- **文件**：[collect/configs/pika_config.yaml](pika_config.yaml)
+- **文件**：[collect/configs/pika_config.yaml](../../collect/configs/pika_config.yaml)
 - **改动**：
   ```yaml
   ik_mode: base_biased_adaptive  # 新增模式支持
@@ -15,7 +15,7 @@
   ```
 
 #### 2. 核心逻辑改进
-- **文件**：[collect/collect_pika.py](collect_pika.py)
+- **文件**：[collect/collect_pika.py](../../collect/collect_pika.py)
 - **改动**：
   - `__init__` 添加参数：`base_limit_rad`, `base_limit_damping_threshold`
   - 初始化状态变量：`_last_base_bias` (用于EMA平滑)
@@ -25,15 +25,15 @@
     3. IK失败回退
 
 #### 3. 参数传递链更新
-- **文件**：[collect/teleop_only.py](teleop_only.py)
+- **文件**：[collect/teleop_only.py](../../collect/teleop_only.py)
 - **改动**：
   - 从config中读取新参数
   - 传递给`PikaTeleopController`初始化
 
 #### 4. 文档和参考
-- **新增**：[ADAPTIVE_IK_IMPROVEMENTS.md](ADAPTIVE_IK_IMPROVEMENTS.md) — 完整设计文档
-- **新增**：[QUICK_START_ADAPTIVE_IK.md](QUICK_START_ADAPTIVE_IK.md) — 快速开始指南  
-- **新增**：[COMPARISON_OLD_VS_NEW.md](COMPARISON_OLD_VS_NEW.md) — 对比表
+- **新增**：[adaptive_ik_improvements_cn.md](adaptive_ik_improvements_cn.md) — 完整设计文档
+- **新增**：[adaptive_ik_quick_start_cn.md](adaptive_ik_quick_start_cn.md) — 快速开始指南
+- **新增**：[base_biased_old_vs_new_cn.md](base_biased_old_vs_new_cn.md) — 对比表
 
 ---
 
@@ -42,7 +42,7 @@
 ### 最小化操作（假设机械臂已连接）
 
 ```bash
-cd /home/changjinli/02-Master/01-PrelearningYear/vla_lerobot_pi0
+cd <repo-root>
 python collect/teleop_only.py --config collect/configs/pika_config.yaml
 ```
 
@@ -136,11 +136,11 @@ teleoperation:
 
 | 文档 | 用途 | 链接 |
 |------|------|------|
-| **快速开始** | 第一次用？读这个 | [QUICK_START_ADAPTIVE_IK.md](QUICK_START_ADAPTIVE_IK.md) |
-| **详细设计** | 理解技术细节 | [ADAPTIVE_IK_IMPROVEMENTS.md](ADAPTIVE_IK_IMPROVEMENTS.md) |
-| **对比表** | 看新旧模式差别 | [COMPARISON_OLD_VS_NEW.md](COMPARISON_OLD_VS_NEW.md) |
-| **IK模式对比** | 了解三种IK模式 | [IK_MODES_COMPARISON.md](IK_MODES_COMPARISON.md) |
-| **数值验证** | 看具体失败数据 | [ik_bias_demo.py](ik_bias_demo.py) |
+| **快速开始** | 第一次用？读这个 | [adaptive_ik_quick_start_cn.md](adaptive_ik_quick_start_cn.md) |
+| **详细设计** | 理解技术细节 | [adaptive_ik_improvements_cn.md](adaptive_ik_improvements_cn.md) |
+| **对比表** | 看新旧模式差别 | [base_biased_old_vs_new_cn.md](base_biased_old_vs_new_cn.md) |
+| **IK模式对比** | 了解三种IK模式 | [ik_modes_comparison_cn.md](ik_modes_comparison_cn.md) |
+| **数值验证** | 看具体失败数据 | [../../collect/ik_bias_demo.py](../../collect/ik_bias_demo.py) |
 
 ---
 
@@ -186,7 +186,7 @@ ik_mode: base_biased_servoj  # 无自适应阻尼和回退
 
 使用 probe_joint_limits.py 手动学习自碰撞边界：
 ```bash
-python collect/tools/probe_joint_limits.py --robot-config collect/configs/robot_hardware.json
+python collect/tools/probe_joint_limits.py --robot-config configs/robot_hardware.example.json
 ```
 然后在 pika_config.yaml 中设置 `joint_limits`，这是**最终根治方案**。
 
@@ -277,9 +277,9 @@ grep "protective stop" /tmp/pika_teleop_*.log | wc -l  # 保护停止次数
 ## 📞 支持
 
 如有问题，查看：
-1. [快速开始](QUICK_START_ADAPTIVE_IK.md) — 99% 的问题都能解决
-2. [详细设计](ADAPTIVE_IK_IMPROVEMENTS.md) — 理解技术细节
-3. [对比表](COMPARISON_OLD_VS_NEW.md) — 理解行为差异
+1. [快速开始](adaptive_ik_quick_start_cn.md) — 99% 的问题都能解决
+2. [详细设计](adaptive_ik_improvements_cn.md) — 理解技术细节
+3. [对比表](base_biased_old_vs_new_cn.md) — 理解行为差异
 
 ---
 

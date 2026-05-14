@@ -1,0 +1,38 @@
+name: vla-pi0
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - git
+
+  # Numerics / IO via conda for stable binaries.
+  - numpy
+  - pandas
+  - pyarrow
+  - matplotlib
+  - tqdm
+  - scipy
+  - pillow
+  - h5py
+
+  - pip:
+      # PyTorch CUDA 12.8 wheels. Keep these together and do not also install
+      # conda pytorch / torchvision / pytorch-cuda in this environment.
+      - "--index-url https://download.pytorch.org/whl/cu128"
+      - "torch==2.10.0"
+      - "torchvision==0.25.0"
+      - "torchaudio==2.10.0"
+
+      # Additional pip packages can still come from PyPI.
+      - "--extra-index-url https://pypi.org/simple"
+      - "lerobot[pi0,dataset] @ git+https://github.com/huggingface/lerobot.git@main"
+      - "imageio[ffmpeg]"
+
+      # Real-robot inference + collect/ data-collection deps (kept in sync with requirements.txt)
+      - ur_rtde
+      - pyrealsense2
+      - opencv-python
+      - pyserial
+      - pyyaml

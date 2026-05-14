@@ -8,17 +8,16 @@ Hardware path
     Hand encoder (rad) ─┘
                                       │  threaded loop @ 50 Hz
                                       ▼
-                Pika Gripper ◄── set_motor_angle(rad)
+                Gripper backend ◄── Pika encoder command
                                       │
                                       ▼
                         UR7e ◄── servoL(target_pose_rotvec)
 
 What we record (per frame, 30 fps default)
 ------------------------------------------
-    observation.state  = [q0..q5, gripper_rad]            float32 [7]
-    action             = [target_q0..target_q5, gripper_cmd_rad] float32 [7]
-    observation.images.cam_global   ← external D435i   (MultiCamera)
-    observation.images.cam_wrist    ← Pika wrist cam   (PikaGripper)
+    observation.state  = [q0..q5, gripper]            float32 [7]
+    action             = [target_q0..target_q5, gripper_cmd] float32 [7]
+    observation.images.*            ← configured cameras
 
 Output is LeRobot v3.0 — directly loadable by ``LeRobotDataset`` and ready
 for pi0 fine-tuning without further conversion.
@@ -55,9 +54,10 @@ if _PIKA_SDK.exists() and str(_PIKA_SDK) not in sys.path:
     sys.path.insert(0, str(_PIKA_SDK))
 
 from utils.camera_interface import MultiCamera                           # noqa: E402
+from utils.gripper_adapters import make_gripper_backend                    # noqa: E402
 from utils.lerobot_writer import LeRobotWriter                            # noqa: E402
 from utils.math_tools import MathTools                                    # noqa: E402
-from utils.pika_interface import PikaGripper, PikaSense, detect_pika_ports  # noqa: E402
+from utils.pika_interface import PikaSense, detect_pika_ports              # noqa: E402
 from utils.preview import CameraPreviewer                                  # noqa: E402
 from utils.robot_interface import UR7eInterface                            # noqa: E402
 
@@ -88,14 +88,14 @@ class PikaTeleopController:
     * we apply the rigid pika→arm-end calibration to that pose
     * incremental motion since the last "trigger pressed" pose is added to
       the arm's initial TCP pose, then sent via servoL at SERVO_HZ
-    * the Sense encoder rad is forwarded to the Pika gripper
+    * the Sense encoder rad is forwarded to the selected gripper backend
     """
 
     def __init__(
         self,
         robot: UR7eInterface,
         sense: PikaSense,
-        gripper: PikaGripper,
+        gripper,
         pika_to_arm: list,
         position_scale: float = 1.0,
         max_delta_m: float = 1.0,
@@ -511,9 +511,9 @@ class PikaTeleopController:
                     ("Pika Sense USB serial",
                      self.sense.is_alive(),
                      "USB cable unplugged, hub power loss, or Sense rebooted"),
-                    ("Pika Gripper USB serial",
+                    ("Gripper backend",
                      self.gripper.is_alive(),
-                     "USB cable unplugged, 24V supply tripped, or gripper rebooted"),
+                     "USB/socket disconnected, power tripped, or gripper rebooted"),
                 ]
                 for name, ok, hint in health:
                     if not ok and not self.aborted:
@@ -545,7 +545,8 @@ class PikaTeleopController:
             else:
                 gripper_cmd = raw_gripper
             self._smoothed_gripper = gripper_cmd
-            self.gripper.set_motor_angle(gripper_cmd)
+            gripper_cmd = self.gripper.command_from_pika_encoder(
+                gripper_cmd, self.dt)
             with self._lock:
                 self._last_gripper_cmd = gripper_cmd
 
@@ -721,9 +722,15 @@ class PikaTeleopController:
 # ======================================================================
 
 class PikaCollector:
-    def __init__(self, cfg: dict, writer: LeRobotWriter):
+    def __init__(self, cfg: dict, writer: LeRobotWriter,
+                 gripper_backend: str | None = None):
         self.cfg = cfg
         self.writer = writer
+        self.gripper_backend = (
+            gripper_backend
+            or (cfg.get("gripper_mapping") or {}).get("type")
+            or "pika"
+        ).lower()
 
         # ----------------------- robot -----------------------
         self.robot = UR7eInterface(
@@ -741,23 +748,19 @@ class PikaCollector:
         )
 
         # ----------------------- gripper ---------------------
-        gripper_cfg = cfg.get("pika_gripper", {})
         wrist_cam = next((c for c in cfg.get("cameras", [])
                           if c.get("type") == "pika_wrist"
                           or c.get("source") == "pika_gripper"), None)
-        self._wrist_cam_key = wrist_cam["name"] if wrist_cam else None
-        self.gripper = PikaGripper(
-            port=gripper_cfg.get("port", "") or "",
-            wrist_camera_kind=(wrist_cam.get("kind", "realsense")
-                               if wrist_cam else "none"),
-            wrist_realsense_serial=(wrist_cam.get("serial")
-                                    if wrist_cam else None),
-            wrist_fisheye_index=(wrist_cam.get("device_index", 0)
-                                 if wrist_cam else 0),
-            wrist_width=(wrist_cam.get("width", 640) if wrist_cam else 640),
-            wrist_height=(wrist_cam.get("height", 480) if wrist_cam else 480),
-            wrist_fps=(wrist_cam.get("fps", 30) if wrist_cam else 30),
-            enable_motor_on_connect=gripper_cfg.get("enable_motor", True),
+        self._wrist_cam_key = (
+            wrist_cam["name"]
+            if (wrist_cam and self.gripper_backend == "pika")
+            else None
+        )
+        self.gripper = make_gripper_backend(
+            self.gripper_backend,
+            cfg,
+            wrist_cam=wrist_cam,
+            show_preview=True,
         )
 
         # ----------------------- external cameras ------------
@@ -831,23 +834,31 @@ class PikaCollector:
 
     def connect(self):
         sense_port_pref = self.cfg.get("pika_sense", {}).get("port") or ""
-        gripper_port_pref = self.cfg.get("pika_gripper", {}).get("port") or ""
-        if not sense_port_pref or not gripper_port_pref:
+        gripper_port_pref = (
+            self.cfg.get("pika_gripper", {}).get("port") or ""
+            if self.gripper_backend == "pika"
+            else None
+        )
+        if not sense_port_pref or (self.gripper_backend == "pika" and not gripper_port_pref):
             sp, gp = detect_pika_ports(sense_port_pref or None,
                                         gripper_port_pref or None)
             if not sense_port_pref:
                 self.sense.port = sp
-            if not gripper_port_pref:
+            if self.gripper_backend == "pika" and not gripper_port_pref:
                 self.gripper.port = gp
-            print(f"[Collector] Auto-detected ports — sense={self.sense.port}, "
-                  f"gripper={self.gripper.port}")
+            if self.gripper_backend == "pika":
+                print(f"[Collector] Auto-detected ports — sense={self.sense.port}, "
+                      f"gripper={self.gripper.port}")
+            else:
+                print(f"[Collector] Auto-detected Pika Sense port — "
+                      f"sense={self.sense.port}")
 
         self.robot.connect(use_control=True)
         self.sense.connect()
         self.gripper.connect()
         if self.ext_cameras is not None:
             self.ext_cameras.connect()
-        print("[Collector] All Pika devices ready.\n")
+        print(f"[Collector] All devices ready (gripper={self.gripper_backend}).\n")
 
         if self._enable_preview:
             self.previewer = CameraPreviewer(
@@ -894,7 +905,7 @@ class PikaCollector:
 
     def _build_state_action(self) -> tuple[np.ndarray, np.ndarray]:
         robot_state = self.robot.get_state()
-        gripper_actual = self.gripper.get_motor_position()
+        gripper_actual = self.gripper.read_position()
         target_q = self.robot.get_target_q()
         gripper_cmd = self.teleop.get_command_snapshot()["gripper_cmd"]
 
@@ -1112,6 +1123,12 @@ def parse_args():
     p.add_argument("--tasks_file", default=None,
                    help="Path to a UTF-8 text file with one task per line.")
     p.add_argument("--fps", type=int, default=None)
+    p.add_argument("--robot-ip", default=None,
+                   help="Override robot.host from the config.")
+    p.add_argument("--sense-port", default=None,
+                   help="Override pika_sense.port from the config.")
+    p.add_argument("--gripper-backend", choices=["pika", "robotiq"], default=None,
+                   help="Override gripper_mapping.type from config.")
     return p.parse_args()
 
 
@@ -1123,6 +1140,10 @@ def load_config(path: str) -> dict:
 def main():
     args = parse_args()
     cfg = load_config(args.config)
+    if args.robot_ip:
+        cfg.setdefault("robot", {})["host"] = args.robot_ip
+    if args.sense_port:
+        cfg.setdefault("pika_sense", {})["port"] = args.sense_port
 
     fps = args.fps or cfg["collection"].get("fps", 30)
     output_dir = args.output_dir or cfg["collection"].get("output_dir", "datasets")
@@ -1164,7 +1185,7 @@ def main():
     for i, t in enumerate(tasks, 1):
         print(f"  [{i}] {t}")
 
-    collector = PikaCollector(cfg, writer)
+    collector = PikaCollector(cfg, writer, gripper_backend=args.gripper_backend)
     collector.connect()
     single_task_mode = bool(args.task) and not args.tasks and not args.tasks_file
     collector.run(tasks=tasks, skip_menu=single_task_mode)
